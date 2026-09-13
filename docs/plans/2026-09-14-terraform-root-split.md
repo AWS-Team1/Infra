@@ -136,10 +136,12 @@ Expected: `Success! The configuration is valid.`
 cd /c/Claude-workspace/final-project/new-workspace/Infra
 mkdir -p aws-modules
 for m in network eks rds elasticache aws-load-balancer-controller; do git mv "modules/$m" "aws-modules/$m"; done
+# 모듈에는 lock 파일이 필요 없다. 초기 커밋(24ed397)부터 딸려 온 잔재다.
+git rm aws-modules/network/.terraform.lock.hcl
 ls aws-modules modules
 ```
 
-Expected: `aws-modules`에 5개, `modules`에 `security`만 남음
+Expected: `aws-modules`에 5개, `modules`에 `security`만 남음. `aws-modules/network`에 `.tf` 3개만
 
 - [ ] **Step 4: validate 가 깨지는지 확인**
 
