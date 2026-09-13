@@ -79,3 +79,36 @@ terraform destroy
 - `terraform.tfvars`, `.terraform/`, `*.tfstate`는 민감정보 보호를 위해 커밋하지 않습니다.
 - NAT Gateway 2개, EKS, Multi-AZ RDS, ElastiCache는 실행 중 비용이 발생합니다. 테스트가 끝나면 불필요한 리소스를 정리하세요.
 - 현재 RDS의 `skip_final_snapshot`과 `apply_immediately` 설정은 테스트 환경에 맞춰져 있습니다. 운영 환경에서는 삭제 방지와 최종 Snapshot 정책을 검토하세요.
+
+## 루트 구조
+
+| 루트 | state key | provider | 의존 |
+|---|---|---|---|
+| `aws-core` | `aws/core/terraform.tfstate` | aws | — |
+| `aws-eks` | `aws/eks/terraform.tfstate` | aws · kubernetes · helm | core |
+| `aws-rds` | `aws/rds/terraform.tfstate` | aws | core |
+| `aws-cache` | `aws/cache/terraform.tfstate` | aws | core |
+
+버킷은 `boa-terraform-state-6416` (ap-northeast-2). `use_lockfile = true` 라
+락 객체가 `<key>.tflock` 으로 key 마다 따로 생긴다. DynamoDB 테이블은 쓰지 않는다.
+
+### 검증 (backend 접속 없음)
+
+    terraform -chdir=<루트> init -backend=false
+    terraform -chdir=<루트> validate
+    terraform fmt -recursive -check
+
+### apply
+
+`aws-core` 를 먼저 적용한다. 나머지 셋은 그 뒤 순서 무관하며 동시 작업이 가능하다.
+`aws-eks` 는 `terraform.tfvars` 의 `code_server_role_arn` 이 필요하다 (저장소에 없음).
+
+### 삭제 순서
+
+Ingress 가 만든 ALB 는 Terraform state 에 없다. 먼저 치우지 않으면
+`aws-core` destroy 가 `DependencyViolation` 으로 막힌다.
+
+    1. kubectl delete ingress ...
+    2. ALB · SG · 대상 그룹 소멸 확인
+    3. terraform -chdir=aws-eks destroy
+    4. terraform -chdir=aws-core destroy

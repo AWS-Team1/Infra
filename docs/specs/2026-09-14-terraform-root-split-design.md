@@ -35,7 +35,7 @@ provider 분리(모든 루트가 `aws` 하나만 쓰게 하는 것)는 **이번 
 | 5 | 애플리케이션 매니페스트는 gitops 소유, 그 외 클러스터 구성요소는 현행 유지 | 이번 범위는 루트 분리다. 소유권 재배치는 함께 하지 않는다 |
 | 6 | AWS Load Balancer Controller는 **Terraform이 설치 (현행 유지)** | 분리 이득은 있으나 이번 범위 밖. §12 개선 과제 |
 | 7 | ALB 2개 — 서비스 ALB는 Ingress(컨트롤러 생성), ops ALB는 Terraform | 수명주기가 다르다. 7절 |
-| 8 | IAM은 `eks-iam-base` / `eks` / `eks-iam-workload` 3모듈, 모두 `aws-eks` 루트 안 | 모듈 순환 회피. 6절 |
+| 8 | IAM은 `eks-iam` 1모듈, `aws-eks` 루트 안 | 클러스터 ARN 을 문자열로 조립해 순환을 없앴다. §6 |
 | 9 | ECR은 Infra 밖 (CI/CD 소관) | gitops 부트스트랩 수정이 따라온다. 9절 |
 | 10 | GCP는 이번 범위에서 제외 | 현재 `.tf` 0건, google provider 참조 0건 |
 
@@ -95,38 +95,41 @@ aws-core ──┬──→ aws-eks
 
 `modules/security` 모듈은 **해체**한다. `db-sg`는 `aws-rds`로, `cache-sg`는 `aws-cache`로, `alb-sg`는 **삭제**한다 — 참조하는 곳이 없고(`module.security.alb_sg_id` 미사용), egress 블록이 없어 아웃바운드가 0인 상태다.
 
-## 6. IAM 모듈을 셋으로 나누는 이유
+## 6. IAM 을 별도 모듈로 두는 방법
 
-IAM을 모듈 하나로 빼면 **모듈 간 순환**이 생겨 apply가 거부된다.
+IAM 이 클러스터 리소스를 참조하면 모듈 간 순환이 생겨 apply 가 거부된다.
 
-```
-eks-iam ──cluster_role_arn, node_role_arn──→ eks
-eks     ──cluster_arn, cluster_name───────→ eks-iam     ← Cycle
-```
+    eks-iam ──cluster_role_arn, node_role_arn──→ eks
+    eks     ──cluster_arn, cluster_name───────→ eks-iam     ← Cycle
 
-클러스터를 참조하는 IAM은 다음과 같다.
+참조를 끊는 방법은 **클러스터 ARN 을 문자열로 조립하는 것**이다.
 
-```
-aws_iam_policy.karpenter_controller        Resource = aws_eks_cluster.main.arn    (iam.tf:219)
-aws_eks_pod_identity_association × 4       cluster_name = aws_eks_cluster.main.name
-aws_eks_access_entry / policy_association  cluster_name = aws_eks_cluster.main.name
-```
+    locals {
+      cluster_arn = "arn:${data.aws_partition.current.partition}:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.cluster_name}"
+    }
 
-따라서 단방향이 되도록 셋으로 나눈다.
+`var.cluster_name` 은 루트가 넘기는 리터럴이고 `data` 두 개는 plan 시점에 확정되므로
+클러스터가 없어도 계산된다. IAM 정책의 Resource 는 대상이 실재하지 않아도 유효하다.
 
-```
-eks-iam-base      cluster role(+EKSClusterPolicy) · node role(+WorkerNode/ECRPullOnly/CNI)
-                  node_secrets 정책
-        ↓
-eks               클러스터 · 노드그룹 · 애드온 6종
-        ↓
-eks-iam-workload  karpenter · ebs-csi · alb-controller · bank-of-anthos
-                  각 role/policy/attachment + Pod Identity 연결 · access entry
-```
+그 결과 IAM 전체가 클러스터를 참조하지 않게 되어 **모듈 하나로 충분하다.**
 
-`eks-iam-workload`는 `node_role_arn`을 base에서 직접 받는다(Karpenter의 `iam:PassRole` 대상). 단방향이므로 순환이 아니다. 세 모듈 모두 **`aws-eks` 루트 하나**가 호출한다.
+    eks-iam   IAM 역할·정책·부착 전부 (클러스터 미참조)
+         ↓
+    eks       클러스터 · 노드그룹 · 애드온 · Pod Identity 연결 · access entry
 
-**IRSA가 아니라 EKS Pod Identity를 쓴다.** `aws_iam_openid_connect_provider`는 없고 신뢰 정책이 `Service = "pods.eks.amazonaws.com"`이다. 빠진 것이 아니라 선택이다.
+`aws_eks_pod_identity_association` 과 `aws_eks_access_entry` 는 EKS 리소스이므로
+`eks` 모듈에 둔다. 이렇게 해야 `aws_eks_addon.ebs_csi` 의 `depends_on` 이
+같은 모듈 안에서 해결된다 — 다른 모듈로 빼면 `eks ↔ iam` 순환이 다시 생긴다.
+
+역할 부착 순서는 output 의 `depends_on` 으로 보장한다.
+
+    output "cluster_role_arn" {
+      value      = aws_iam_role.cluster.arn
+      depends_on = [aws_iam_role_policy_attachment.cluster_eks_policy]
+    }
+
+**IRSA 가 아니라 EKS Pod Identity 를 쓴다.** `aws_iam_openid_connect_provider` 는 없고
+신뢰 정책이 `Service = "pods.eks.amazonaws.com"` 이다. 빠진 것이 아니라 선택이다.
 
 ## 7. ALB 설계
 
