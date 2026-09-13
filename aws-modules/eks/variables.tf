@@ -64,3 +64,24 @@ variable "project_name" {
   description = "리소스 이름 / Secrets Manager 경로 접두사"
   type        = string
 }
+
+# eks-iam 모듈이 만든 역할 ARN 을 받는다.
+variable "cluster_role_arn" {
+  type = string
+}
+
+variable "node_role_arn" {
+  type = string
+}
+
+variable "karpenter_role_arn" {
+  type = string
+}
+
+variable "ebs_csi_role_arn" {
+  type = string
+}
+
+variable "bank_of_anthos_role_arn" {
+  type = string
+}

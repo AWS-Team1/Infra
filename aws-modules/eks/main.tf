@@ -18,7 +18,7 @@ resource "aws_cloudwatch_log_group" "eks" {
 
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
-  role_arn = aws_iam_role.cluster.arn
+  role_arn = var.cluster_role_arn
   version  = var.kubernetes_version
 
   enabled_cluster_log_types = [
@@ -42,7 +42,6 @@ resource "aws_eks_cluster" "main" {
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.cluster_eks_policy,
     aws_cloudwatch_log_group.eks
   ]
 
@@ -67,7 +66,7 @@ resource "aws_ec2_tag" "karpenter_cluster_sg_discovery" {
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = var.node_group_name
-  node_role_arn   = aws_iam_role.node.arn
+  node_role_arn   = var.node_role_arn
 
   subnet_ids = var.private_subnet_ids
 
@@ -90,12 +89,6 @@ resource "aws_eks_node_group" "main" {
   node_repair_config {
     enabled = true
   }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.node_worker,
-    aws_iam_role_policy_attachment.node_ecr,
-    aws_iam_role_policy_attachment.node_cni
-  ]
 
   tags = {
     Name = var.node_group_name
