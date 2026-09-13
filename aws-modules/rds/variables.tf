@@ -34,10 +34,6 @@ variable "db_subnet_ids" {
   type = list(string)
 }
 
-variable "db_security_group_id" {
-  type = string
-}
-
 variable "backup_retention_period" {
   type = number
 }
@@ -60,4 +56,14 @@ variable "create_os_metrics_log_group" {
   description = "RDSOSMetrics CloudWatch 로그 그룹을 이 스택이 생성할지 여부"
   type        = bool
   default     = true
+}
+
+variable "vpc_id" {
+  description = "db Security Group 을 만들 VPC"
+  type        = string
+}
+
+variable "private_subnet_cidrs" {
+  description = "5432 인바운드를 허용할 프라이빗 서브넷 CIDR"
+  type        = list(string)
 }

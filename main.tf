@@ -100,7 +100,8 @@ module "rds" {
   max_allocated_storage = 100
 
   db_subnet_ids        = module.network.db_subnet_ids
-  db_security_group_id = module.security.db_sg_id
+  vpc_id               = module.network.vpc_id
+  private_subnet_cidrs = module.network.private_subnet_cidrs
 
   backup_retention_period                = 7
   monitoring_interval                    = 60
