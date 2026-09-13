@@ -1,0 +1,230 @@
+# Terraform 루트 분리 설계
+
+- 작성일: 2026-09-14
+- 대상 저장소: `swoobuntu/Infra` (브랜치 `Karfa-choi`)
+- 선행 커밋: `97a01b6` (boa- 접두사 전환, 기존 VPC 재사용)
+
+## 1. 배경
+
+현재 `Infra/`는 **단일 루트 모듈**이다. 루트 `main.tf`가 모듈 6종을 호출하고 state 하나가 전부를 담는다.
+
+문제는 셋이다.
+
+1. **작업이 직렬화된다.** 누가 apply하면 state 락이 전체를 잠근다. RDS apply는 십수 분 걸린다.
+2. **provider가 섞여 있다.** `provider.tf`의 kubernetes·helm이 `module.eks` 출력에 의존해, 클러스터가 없으면 `plan`조차 돌지 않는다.
+3. **폭발 반경이 하나다.** 서브넷 하나 고치는 plan에 RDS 변경이 같이 뜬다. `modules/rds/main.tf:62`가 `skip_final_snapshot = true`라 사고 비용이 크다.
+
+## 2. 목표
+
+- 컴포넌트별 state 분리
+- 루트 간 의존성을 **1단**으로 평평하게
+- 모든 루트가 `aws` provider 하나만 쓰게 하여, 클러스터 유무와 무관하게 plan 가능
+- 모듈을 재사용 단위로 분리
+
+## 3. 확정된 결정
+
+| # | 결정 | 근거 |
+|---|---|---|
+| 1 | 루트 5개 — `aws-core` `aws-eks` `aws-rds` `aws-cache` `aws-ops` | 5절 |
+| 2 | 모듈 디렉터리를 `aws-modules/` · `gcp-modules/`로 분리 | 클라우드 간 공유 코드는 사실상 없다. 공유되는 것은 구조와 변수 규약이다 |
+| 3 | DB·캐시 인바운드를 **EKS 클러스터 SG 참조 → 프라이빗 서브넷 CIDR 허용**으로 | 의존 사슬을 1단으로. 느슨해진 경계는 **NACL로 보완(보류)** |
+| 4 | 루트 간 값 전달은 **`terraform_remote_state`** | 명시적이고, 기존 `data "aws_vpc"` 패턴과 공존한다 |
+| 5 | 소유권 경계 — **AWS 리소스는 Terraform, 클러스터 내부는 ArgoCD** | 두 도구가 같은 것을 소유하면 드리프트가 난다 |
+| 6 | AWS Load Balancer Controller는 **ArgoCD가 설치** | `aws-eks` 루트를 `aws` provider 하나로 유지 |
+| 7 | ALB 2개 — 서비스 ALB는 Ingress(컨트롤러 생성), ops ALB는 Terraform | 수명주기가 다르다. 7절 |
+| 8 | IAM은 `eks-iam-base` / `eks` / `eks-iam-workload` 3모듈, 모두 `aws-eks` 루트 안 | 모듈 순환 회피. 6절 |
+| 9 | ECR은 Infra 밖 (CI/CD 소관) | gitops 부트스트랩 수정이 따라온다. 9절 |
+| 10 | GCP는 이번 범위에서 제외 | 현재 `.tf` 0건, google provider 참조 0건 |
+
+## 4. 디렉터리 구조
+
+```
+Infra/
+├── aws-modules/                재사용 단위. backend 없음
+│   ├── network/
+│   ├── eks-iam-base/           클러스터를 참조하지 않는 IAM
+│   ├── eks/                    클러스터 · 노드그룹 · 애드온
+│   ├── eks-iam-workload/       클러스터가 있어야 만드는 IAM + Pod Identity
+│   ├── rds/
+│   ├── elasticache/
+│   └── ops-alb/                 ops ALB. ALB 컨트롤러와 무관
+├── gcp-modules/                (GCP 착수 시)
+├── aws-core/                   루트
+├── aws-eks/
+├── aws-rds/
+├── aws-cache/
+├── aws-ops/
+└── docs/specs/
+```
+
+루트 하나의 구성:
+
+```
+aws-eks/
+├── backend.tf        전용 state key
+├── versions.tf
+├── providers.tf      aws 하나
+├── main.tf
+├── variables.tf
+├── outputs.tf        다음 루트가 읽을 계약
+└── terraform.tfvars  (.gitignore)
+```
+
+## 5. 루트별 내용과 의존 관계
+
+| 루트 | 내용 | 읽는 것 | 노출하는 것 |
+|---|---|---|---|
+| `aws-core` | VPC(data 참조) · 서브넷 6 · IGW · NAT 2 · 라우팅 3 · S3 엔드포인트 연결 **[나중: NACL]** | — | `vpc_id` `vpc_cidr` `public_subnet_ids` `private_subnet_ids` `private_subnet_cidrs` `db_subnet_ids` |
+| `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4 · access entry | core | `cluster_name` `cluster_endpoint` `cluster_ca` `cluster_security_group_id` |
+| `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `address` `port` `db_name` `master_user_secret_arn` |
+| `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `endpoint` `secret_arn` |
+| `aws-ops` | ops ALB · 리스너 · 대상 그룹 · ops-alb-sg · Route53 레코드 **[나중: ECS]** | core | `argocd_target_group_arn` `alb_security_group_id` `alb_dns_name` |
+
+```
+aws-core ──┬──→ aws-eks
+           ├──→ aws-rds        서로 모른다. 동시 작업 가능
+           ├──→ aws-cache
+           └──→ aws-ops
+```
+
+`aws-rds`·`aws-cache`가 `aws-eks`를 보지 않는 이유가 결정 3이다. 현재 `modules/security/main.tf:130,164`의 인바운드가 `referenced_security_group_id = <EKS 클러스터 SG>`인데, 이를 `cidr_ipv4 = <프라이빗 서브넷 CIDR>`로 바꾼다.
+
+`modules/security` 모듈은 **해체**한다. `db-sg`는 `aws-rds`로, `cache-sg`는 `aws-cache`로, `alb-sg`는 **삭제**한다 — 참조하는 곳이 없고(`module.security.alb_sg_id` 미사용), egress 블록이 없어 아웃바운드가 0인 상태다.
+
+## 6. IAM 모듈을 셋으로 나누는 이유
+
+IAM을 모듈 하나로 빼면 **모듈 간 순환**이 생겨 apply가 거부된다.
+
+```
+eks-iam ──cluster_role_arn, node_role_arn──→ eks
+eks     ──cluster_arn, cluster_name───────→ eks-iam     ← Cycle
+```
+
+클러스터를 참조하는 IAM은 다음과 같다.
+
+```
+aws_iam_policy.karpenter_controller        Resource = aws_eks_cluster.main.arn    (iam.tf:219)
+aws_eks_pod_identity_association × 4       cluster_name = aws_eks_cluster.main.name
+aws_eks_access_entry / policy_association  cluster_name = aws_eks_cluster.main.name
+```
+
+따라서 단방향이 되도록 셋으로 나눈다.
+
+```
+eks-iam-base      cluster role(+EKSClusterPolicy) · node role(+WorkerNode/ECRPullOnly/CNI)
+                  node_secrets 정책
+        ↓
+eks               클러스터 · 노드그룹 · 애드온 6종
+        ↓
+eks-iam-workload  karpenter · ebs-csi · alb-controller · bank-of-anthos
+                  각 role/policy/attachment + Pod Identity 연결 · access entry
+```
+
+`eks-iam-workload`는 `node_role_arn`을 base에서 직접 받는다(Karpenter의 `iam:PassRole` 대상). 단방향이므로 순환이 아니다. 세 모듈 모두 **`aws-eks` 루트 하나**가 호출한다.
+
+**IRSA가 아니라 EKS Pod Identity를 쓴다.** `aws_iam_openid_connect_provider`는 없고 신뢰 정책이 `Service = "pods.eks.amazonaws.com"`이다. 빠진 것이 아니라 선택이다.
+
+## 7. ALB 설계
+
+### 두 ALB는 소유자가 다르다
+
+| | 서비스 ALB | ops ALB |
+|---|---|---|
+| 만드는 주체 | ALB 컨트롤러 (Ingress 어노테이션) | Terraform (`aws-ops`) |
+| 대상 | `frontend` | ArgoCD → 나중에 Grafana · Loki · Tempo |
+| SG | 컨트롤러가 자동 생성·관리, 백엔드 SG 규칙도 자동 | Terraform이 만든 SG. **자동으로 안 열어준다** |
+| 대상 등록 | 컨트롤러가 Ingress backend에서 자동 | `TargetGroupBinding`으로 명시 |
+| 수명 | Ingress 삭제 시 함께 삭제 | Terraform이 지울 때까지 유지 |
+| 호스트 | `app.bespinglobal.site` | `argocd.bespinglobal.site` |
+
+수명주기가 다르기 때문에 관리 방식이 다르다. ArgoCD·Grafana는 클러스터를 재생성해도 접속 주소가 유지돼야 하고, DR 시 GCP 쪽을 가리키도록 바꿀 수도 있다.
+
+**인증서는 공유한다.** `*.bespinglobal.site` 와일드카드가 이미 발급돼 있다(`arn:aws:acm:ap-northeast-2:769413326616:certificate/1c81ee2e-edbc-4a42-961d-816d571767ab`, 상태 ISSUED). Route53 퍼블릭 호스팅 영역 `bespinglobal.site.`(`Z03791674GY6T60MVQ4V`)도 같은 계정에 있다. ACM은 Terraform 관리 대상이 아니며 `data "aws_acm_certificate"`로 참조한다.
+
+### ops ALB 연결 시 맞춰야 할 네 가지
+
+1. **`TargetGroupBinding`에 `spec.networking`이 필요하다.** 현재 `gitops/scripts/bootstrap-eks.sh:585`가 렌더링하는 매니페스트에 이 블록이 없다. SG를 직접 지정한 ALB는 컨트롤러가 백엔드 SG 규칙을 자동으로 열지 않으므로, `networking.ingress[].from[].securityGroup.groupID`에 ops-alb-sg를 명시해야 한다. → `aws-ops`가 `alb_security_group_id`를 output으로 내고 `aws.env`에 주입한다.
+
+2. **`argocd-server`를 `insecure`로 띄워야 한다.** `gitops/bootstrap/argocd/values.yaml`에 설정이 없다. 기본값은 자체 서명 TLS + HTTP→HTTPS 리다이렉트라, ALB에서 TLS를 끊으면 리다이렉트 루프가 된다.
+
+3. **CRD가 먼저 있어야 한다.** `TargetGroupBinding`은 ALB 컨트롤러가 설치하는 CRD다. ArgoCD sync wave 기준 컨트롤러를 `-5`(platform), TargetGroupBinding을 `0`에 둔다.
+
+4. **헬스체크를 명시한다.** 포트 8080, 경로 `/healthz`, 프로토콜 HTTP(1의 insecure 적용 후).
+
+### 삭제 순서 주의
+
+Ingress가 만든 ALB는 Terraform state에 없다. ALB의 ENI가 퍼블릭 서브넷에 꽂혀 있으므로, Ingress를 지우지 않고 `aws-core`를 destroy하면 서브넷 삭제가 `DependencyViolation`으로 막힌다.
+
+```
+1. kubectl delete ingress (또는 ArgoCD Application 삭제)
+2. ALB·SG 소멸 확인
+3. terraform destroy
+```
+
+## 8. 클러스터 소유권 — gitops로 이동하는 것
+
+| 이동 대상 | 현재 위치 |
+|---|---|
+| ALB 컨트롤러 `helm_release` · `ServiceAccount` | `modules/aws-load-balancer-controller/main.tf:38,53` |
+| `kubernetes_cluster_role_v1` · `_binding_v1` | `modules/eks/iam.tf:434,461` |
+| 애플리케이션 매니페스트 25개 | `Infra/boa/k8s/` |
+
+IAM 역할·정책·`aws_eks_pod_identity_association`은 **Terraform에 남는다** — AWS 리소스이며, Pod Identity 연결은 클러스터 이름을 필요로 하므로 `aws-eks` 소관이다.
+
+## 9. ECR 이동의 파급
+
+`gitops/scripts/bootstrap-eks.sh:233`이 `terraform output -json`에서 `ecr_registry`를 읽고, 245–262행의 **필수 목록**에 들어 있어 비면 `die`로 중단한다. 287행에 환경 파일 경로가 있으나 그 앞의 필수 검사를 먼저 통과해야 도달한다.
+
+선택지 셋 — (a) 필수 목록에서 제외하고 환경 파일 경로만 사용, (b) CI/CD의 output을 Infra가 remote state로 읽어 재노출, (c) `aws.env`에 레지스트리 주소를 고정값으로 기재. **(c)가 가장 단순하다** — `<account>.dkr.ecr.ap-northeast-2.amazonaws.com`은 불변이다.
+
+## 10. state 배치
+
+```
+s3://boa-terraform-state-6416/
+├── aws/core/terraform.tfstate
+├── aws/eks/terraform.tfstate
+├── aws/rds/terraform.tfstate
+├── aws/cache/terraform.tfstate
+└── aws/ops/terraform.tfstate
+```
+
+버킷은 `ap-northeast-2`, 버전 관리 Enabled, AES256, 퍼블릭 4종 차단. `use_lockfile = true`(S3 네이티브 락)이므로 락 객체가 `<key>.tflock`으로 key마다 따로 생긴다. DynamoDB 테이블은 불필요하다(`dynamodb_table`은 deprecated).
+
+## 11. 이행 순서
+
+1. `git mv`로 `modules/*` → `aws-modules/*` (이력 보존)
+2. `modules/security` 해체 — db-sg·cache-sg 이관, alb-sg 삭제
+3. `aws-modules/eks`에서 IAM을 `eks-iam-base` / `eks-iam-workload`로 분리
+4. `modules/aws-load-balancer-controller` 해체 — IAM·Pod Identity는 `eks-iam-workload`로, `helm_release`·`ServiceAccount`는 gitops로. `aws-modules/eks`의 `kubernetes_cluster_role_v1`·`_binding_v1`도 gitops로
+5. 루트 5개 생성 (`backend.tf` · `providers.tf` · `main.tf` · `variables.tf` · `outputs.tf`)
+6. 기존 루트 `main.tf` · `backend.tf` · `provider.tf` 제거
+7. `Infra/boa/k8s/` → gitops 저장소 이관
+8. 루트별 `terraform init -backend=false` + `validate`
+
+**아직 apply한 적이 없어 state 마이그레이션이 필요 없다.** 구조를 바꾸기에 가장 저렴한 시점이다. apply 이후였다면 루트별 `terraform state mv`가 필요했다.
+
+## 12. 미정 사항
+
+| 항목 | 내용 | 결정 시한 |
+|---|---|---|
+| NACL 설계 | 결정 3의 보완책. 서브넷 경계 규칙 | 루트 분리 완료 후, 운영 전환 전 |
+| 매니페스트 배포 주체 | 초기 매니페스트를 Terraform이 배포할지 재검토 | 별도 검토 (이번 범위 밖) |
+| Grafana 배치 | EKS 파드 / ECS 태스크 / 프라이빗 서브넷 EC2 | `observability` 착수 전 |
+| `observability` 루트 범위 | CloudWatch / ADOT / Prometheus·Grafana·Loki·Tempo 조합 | 별도 브리핑 필요 |
+| ECR 파급 처리 | 9절 (a)(b)(c) 중 선택 | gitops 부트스트랩 실행 전 |
+| GCP state 백엔드 | GCS 버킷·경로. S3에 두면 GCP가 AWS 자격증명을 갖게 된다 | GCP 착수 전 |
+| dev/prod 환경 분리 | 현재 단일 | 운영 전환 전 |
+
+**절대 날짜는 팀 일정이 정해진 뒤 채운다.**
+
+## 13. 확인이 필요한 기존 문제
+
+루트 분리와 별개로, 현재 코드에 남아 있는 문제들이다.
+
+| 문제 | 위치 | 비고 |
+|---|---|---|
+| 노드 역할이 Secrets Manager `/boa/*`에 직접 접근 | `modules/eks/iam.tf:325–355` | 그 노드의 모든 파드가 IMDS로 접근 가능. Pod Identity를 쓰는 취지를 깨뜨린다. **단, Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인 필요** |
+| Pod Identity 네임스페이스가 `default` | `modules/eks/iam.tf:427` | 라이브 앱 네임스페이스는 `bank-of-anthos`. 다르면 파드가 자격증명을 못 받는다 |
+| ALB 컨트롤러 SA의 `automount_service_account_token = false` | `modules/aws-load-balancer-controller/main.tf:43` | 컨트롤러는 kube API 토큰이 필요하다. Helm 차트가 파드 레벨에서 켜주는지 확인 필요 |
+| EKS 퍼블릭 엔드포인트에 코드 서버 IP 하드코딩 | `main.tf:59` (`15.165.176.99/32`) | 인스턴스 재기동 시 변경된다. 변수화 필요 |
+| 루트 `outputs.tf` 부재 | — | gitops 부트스트랩이 요구하는 output 9종이 없다 |
