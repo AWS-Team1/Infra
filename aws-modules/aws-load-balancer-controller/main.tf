@@ -3,6 +3,10 @@ resource "aws_iam_policy" "this" {
   description = "IAM policy for AWS Load Balancer Controller"
 
   policy = file("${path.module}/iam-policy.json")
+
+  tags = {
+    Name = "${var.cluster_name}-aws-load-balancer-controller"
+  }
 }
 
 # AWS Load Balancer Controller가 사용할 IAM Role
@@ -27,6 +31,10 @@ resource "aws_iam_role" "this" {
       }
     ]
   })
+
+  tags = {
+    Name = "${var.cluster_name}-aws-load-balancer-controller"
+  }
 }
 
 # 위 IAM Role에 Load Balancer Controller IAM Policy 연결

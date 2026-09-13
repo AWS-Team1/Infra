@@ -26,4 +26,8 @@ resource "aws_vpc_security_group_ingress_rule" "db_postgresql" {
   ip_protocol = "tcp"
 
   description = "Allow PostgreSQL from private subnet ${each.value}"
+
+  tags = {
+    Name = "${var.project_name}-db-in-5432-${each.value}"
+  }
 }

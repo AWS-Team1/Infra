@@ -25,4 +25,8 @@ resource "aws_vpc_security_group_ingress_rule" "cache_valkey" {
   ip_protocol = "tcp"
 
   description = "Allow Valkey from private subnet ${each.value}"
+
+  tags = {
+    Name = "${var.project_name}-cache-in-6379-${each.value}"
+  }
 }
