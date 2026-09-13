@@ -1,15 +1,15 @@
 resource "aws_secretsmanager_secret" "jwt_public" {
-  name = "/project/jwt/public"
+  name = "/${var.project_name}/jwt/public"
 
   tags = {
-    Name = "project-jwt-public"
+    Name = "${var.project_name}-jwt-public"
   }
 }
 
 resource "aws_secretsmanager_secret" "jwt_private" {
-  name = "/project/jwt/private"
+  name = "/${var.project_name}/jwt/private"
 
   tags = {
-    Name = "project-jwt-private"
+    Name = "${var.project_name}-jwt-private"
   }
 }

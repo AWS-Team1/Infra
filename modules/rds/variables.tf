@@ -53,3 +53,11 @@ variable "performance_insights_retention_period" {
 variable "enhanced_monitoring_log_retention_days" {
   type = number
 }
+
+# RDSOSMetrics 로그 그룹은 RDS 향상된 모니터링이 쓰는 계정·리전 공용 고정 이름이다.
+# 이미 다른 스택이 만들어 둔 경우 false 로 두어 생성을 건너뛴다.
+variable "create_os_metrics_log_group" {
+  description = "RDSOSMetrics CloudWatch 로그 그룹을 이 스택이 생성할지 여부"
+  type        = bool
+  default     = true
+}

@@ -1,9 +1,18 @@
+# =========================================================
+# Network
+# - VPC / IGW 는 기존 것을 재사용한다 (생성하지 않음)
+#   vpc-07194d5f908bac7cf : 192.168.0.0/16
+#   기존 퍼블릭 서브넷 192.168.0.0/24, 192.168.1.0/24 는 건드리지 않는다
+# =========================================================
+
 module "network" {
   source = "./modules/network"
 
-  project_name = "project"
+  project_name = "boa"
+  cluster_name = "boa-eks"
 
-  vpc_cidr = "10.0.0.0/16"
+  vpc_id                 = "vpc-07194d5f908bac7cf"
+  s3_gateway_endpoint_id = "vpce-0853a7dfbfac3dd62"
 
   availability_zones = [
     "ap-northeast-2a",
@@ -11,18 +20,18 @@ module "network" {
   ]
 
   public_subnet_cidrs = [
-    "10.0.0.0/24",
-    "10.0.1.0/24"
+    "192.168.2.0/24",
+    "192.168.3.0/24"
   ]
 
   private_subnet_cidrs = [
-    "10.0.8.0/24",
-    "10.0.9.0/24"
+    "192.168.8.0/24",
+    "192.168.9.0/24"
   ]
 
   db_subnet_cidrs = [
-    "10.0.16.0/24",
-    "10.0.17.0/24"
+    "192.168.16.0/24",
+    "192.168.17.0/24"
   ]
 }
 
@@ -31,7 +40,7 @@ module "network" {
 module "security" {
   source = "./modules/security"
 
-  project_name = "project"
+  project_name = "boa"
   vpc_id       = module.network.vpc_id
 
   eks_cluster_security_group_id = module.eks.cluster_security_group_id
@@ -42,7 +51,8 @@ module "security" {
 module "eks" {
   source = "./modules/eks"
 
-  cluster_name       = "project-eks"
+  project_name       = "boa"
+  cluster_name       = "boa-eks"
   kubernetes_version = "1.36"
 
   private_subnet_ids = module.network.private_subnet_ids
@@ -51,7 +61,7 @@ module "eks" {
     "15.165.176.99/32"
   ]
 
-  node_group_name = "project-eks-node-group"
+  node_group_name = "boa-eks-node-group"
 
   node_instance_types = [
     "t3.medium"
@@ -77,11 +87,11 @@ module "eks" {
 module "rds" {
   source = "./modules/rds"
 
-  project_name = "project"
+  project_name = "boa"
 
-  db_identifier = "project-postgres"
-  db_name       = "projectdb"
-  db_username   = "project_admin"
+  db_identifier = "boa-postgres"
+  db_name       = "boadb"
+  db_username   = "boa_admin"
 
   engine_version = "16.14"
   instance_class = "db.t4g.micro"
@@ -96,6 +106,9 @@ module "rds" {
   monitoring_interval                    = 60
   performance_insights_retention_period  = 7
   enhanced_monitoring_log_retention_days = 7
+
+  # RDSOSMetrics 는 계정·리전 공용 고정 이름. 기존 스택이 이미 보유 중이라 생성하지 않는다.
+  create_os_metrics_log_group = false
 }
 
 
@@ -108,11 +121,11 @@ module "rds" {
 module "elasticache" {
   source = "./modules/elasticache"
 
-  project_name = "project"
+  project_name = "boa"
 
   # Cache / RBAC User 이름
-  cache_name = "project-valkey"
-  user_name  = "project-app"
+  cache_name = "boa-valkey"
+  user_name  = "boa-app"
 
   # EKS Private Subnet A/C 공유
   subnet_ids = module.network.private_subnet_ids

@@ -94,6 +94,8 @@ resource "aws_db_instance" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "rds_os_metrics" {
+  count = var.create_os_metrics_log_group ? 1 : 0
+
   name              = "RDSOSMetrics"
   retention_in_days = var.enhanced_monitoring_log_retention_days
 

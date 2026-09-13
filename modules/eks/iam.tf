@@ -3,7 +3,7 @@
 # ===================================================
 
 resource "aws_iam_role" "cluster" {
-  name = "project-eks-cluster-role"
+  name = "${var.cluster_name}-cluster-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -22,7 +22,7 @@ resource "aws_iam_role" "cluster" {
   })
 
   tags = {
-    Name = "project-eks-cluster-role"
+    Name = "${var.cluster_name}-cluster-role"
   }
 }
 
@@ -38,7 +38,7 @@ resource "aws_iam_role_policy_attachment" "cluster_eks_policy" {
 # ===================================================
 
 resource "aws_iam_role" "node" {
-  name = "project-eks-node-role"
+  name = "${var.cluster_name}-node-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -57,7 +57,7 @@ resource "aws_iam_role" "node" {
   })
 
   tags = {
-    Name = "project-eks-node-role"
+    Name = "${var.cluster_name}-node-role"
   }
 }
 
@@ -338,7 +338,7 @@ resource "aws_iam_policy" "node_secrets" {
         ]
 
         Resource = [
-          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/project/*"
+          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/${var.project_name}/*"
         ]
       }
     ]
@@ -359,7 +359,7 @@ resource "aws_iam_role_policy_attachment" "node_secrets" {
 # ============================================================
 
 resource "aws_iam_role" "bank_of_anthos" {
-  name = "bank-of-anthos-sm"
+  name = "${var.project_name}-bank-of-anthos-sm"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -381,13 +381,13 @@ resource "aws_iam_role" "bank_of_anthos" {
   })
 
   tags = {
-    Name = "bank-of-anthos-sm"
+    Name = "${var.project_name}-bank-of-anthos-sm"
   }
 }
 
 
 resource "aws_iam_policy" "bank_of_anthos_secrets" {
-  name        = "bank-of-anthos-secrets"
+  name        = "${var.project_name}-bank-of-anthos-secrets"
   description = "Secrets Manager access for Bank of Anthos application"
 
   policy = jsonencode({
@@ -403,7 +403,7 @@ resource "aws_iam_policy" "bank_of_anthos_secrets" {
         ]
 
         Resource = [
-          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/project/*",
+          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/${var.project_name}/*",
 
           # Phase 1:
           # RDS Managed Master Password secret

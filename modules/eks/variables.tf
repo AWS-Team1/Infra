@@ -58,3 +58,9 @@ variable "region" {
   description = "AWS Region"
   type        = string
 }
+
+# Secrets Manager 경로 접두사 등 클러스터명과 별개로 쓰이는 이름 접두사
+variable "project_name" {
+  description = "리소스 이름 / Secrets Manager 경로 접두사"
+  type        = string
+}
