@@ -45,9 +45,8 @@ provider 분리(모든 루트가 `aws` 하나만 쓰게 하는 것)는 **이번 
 Infra/
 ├── aws-modules/                재사용 단위. backend 없음
 │   ├── network/
-│   ├── eks-iam-base/           클러스터를 참조하지 않는 IAM
+│   ├── eks-iam/                IAM 역할·정책·부착 전부 (클러스터 미참조)
 │   ├── eks/                    클러스터 · 노드그룹 · 애드온
-│   ├── eks-iam-workload/       클러스터가 있어야 만드는 IAM + Pod Identity
 │   ├── rds/
 │   ├── elasticache/
 │   ├── aws-load-balancer-controller/   IAM · SA · helm_release (현행 그대로)
@@ -210,7 +209,7 @@ s3://boa-terraform-state-6416/
 
 1. `git mv`로 `modules/*` → `aws-modules/*` (이력 보존)
 2. `modules/security` 해체 — db-sg·cache-sg 이관, alb-sg 삭제
-3. `aws-modules/eks`에서 IAM을 `eks-iam-base` / `eks-iam-workload`로 분리
+3. `aws-modules/eks`에서 IAM을 `eks-iam` 1모듈로 분리
 4. `modules/aws-load-balancer-controller`는 **그대로 옮기기만 한다** — `aws-modules/aws-load-balancer-controller`. 내용 변경 없음
 5. 루트 5개 생성 (`backend.tf` · `providers.tf` · `main.tf` · `variables.tf` · `outputs.tf`)
 6. 기존 루트 `main.tf` · `backend.tf` · `provider.tf` 제거
