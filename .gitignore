@@ -1,0 +1,47 @@
+# Terraform working directories and generated state
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Local variable files can contain credentials or environment-specific values
+*.tfvars
+*.tfvars.json
+
+# Local CLI and plan output
+.terraformrc
+terraform.rc
+*.tfplan
+crash.log
+crash.*.log
+
+# Keep dependency lock files under version control
+!.terraform.lock.hcl
+
+# EC2 user / local environment
+.bash_history
+.bash_logout
+.bash_profile
+.bashrc
+.cache/
+.codex/
+.config/
+.copilot/
+.dotnet/
+.kube/
+.lesshst
+.ssh/
+.terraform.d/
+.viminfo
+.vscode-server/
+.wget-hsts
+
+# Local secrets
+jwt-keys/
+
+# Local credentials, agent settings, and generated executables/plans
+.aws/
+.claude/
+.claude.json
+.agents/
+/tfdestroy
+/modules/kubectl
