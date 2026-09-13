@@ -6,7 +6,7 @@
 # =========================================================
 
 module "network" {
-  source = "./modules/network"
+  source = "./aws-modules/network"
 
   project_name = "boa"
   cluster_name = "boa-eks"
@@ -49,7 +49,7 @@ module "security" {
 
 
 module "eks" {
-  source = "./modules/eks"
+  source = "./aws-modules/eks"
 
   project_name       = "boa"
   cluster_name       = "boa-eks"
@@ -85,7 +85,7 @@ module "eks" {
 
 
 module "rds" {
-  source = "./modules/rds"
+  source = "./aws-modules/rds"
 
   project_name = "boa"
 
@@ -119,7 +119,7 @@ module "rds" {
 # =========================================================
 
 module "elasticache" {
-  source = "./modules/elasticache"
+  source = "./aws-modules/elasticache"
 
   project_name = "boa"
 
@@ -140,7 +140,7 @@ module "elasticache" {
 
 
 module "aws_load_balancer_controller" {
-  source = "./modules/aws-load-balancer-controller"
+  source = "./aws-modules/aws-load-balancer-controller"
 
   cluster_name = module.eks.cluster_name
   region       = "ap-northeast-2"
