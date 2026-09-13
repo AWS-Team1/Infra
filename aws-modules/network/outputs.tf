@@ -30,3 +30,11 @@ output "db_subnet_ids" {
     aws_subnet.db_c.id
   ]
 }
+
+# rds / elasticache 가 SG 인바운드를 CIDR 로 여는 데 쓴다.
+output "private_subnet_cidrs" {
+  value = [
+    aws_subnet.private_a.cidr_block,
+    aws_subnet.private_c.cidr_block
+  ]
+}
