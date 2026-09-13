@@ -90,7 +90,7 @@ resource "aws_elasticache_serverless_cache" "main" {
 
   # ElastiCache 전용 Security Group
   security_group_ids = [
-    var.security_group_id
+    aws_security_group.cache.id
   ]
 
   # RBAC 인증에 사용할 User Group

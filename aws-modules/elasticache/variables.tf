@@ -18,11 +18,6 @@ variable "subnet_ids" {
   type = list(string)
 }
 
-# ElastiCache 전용 Security Group
-variable "security_group_id" {
-  type = string
-}
-
 # Serverless Cache 최대 저장 용량(GB)
 variable "max_data_storage" {
   type = number
@@ -31,4 +26,14 @@ variable "max_data_storage" {
 # Serverless Cache 최대 처리량(ECPU/sec)
 variable "max_ecpu_per_second" {
   type = number
+}
+
+# cache Security Group 을 만들 VPC
+variable "vpc_id" {
+  type = string
+}
+
+# 6379 인바운드를 허용할 프라이빗 서브넷 CIDR
+variable "private_subnet_cidrs" {
+  type = list(string)
 }

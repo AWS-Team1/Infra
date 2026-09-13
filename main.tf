@@ -37,17 +37,6 @@ module "network" {
 
 
 
-module "security" {
-  source = "./modules/security"
-
-  project_name = "boa"
-  vpc_id       = module.network.vpc_id
-
-  eks_cluster_security_group_id = module.eks.cluster_security_group_id
-}
-
-
-
 module "eks" {
   source = "./aws-modules/eks"
 
@@ -131,8 +120,8 @@ module "elasticache" {
   # EKS Private Subnet A/C 공유
   subnet_ids = module.network.private_subnet_ids
 
-  # Security 모듈에서 생성한 Cache SG
-  security_group_id = module.security.cache_sg_id
+  vpc_id               = module.network.vpc_id
+  private_subnet_cidrs = module.network.private_subnet_cidrs
 
   # Phase 1 테스트용 낮은 사용량 상한
   max_data_storage    = 1
