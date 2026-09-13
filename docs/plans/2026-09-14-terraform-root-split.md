@@ -964,7 +964,7 @@ grep -c '^resource "aws_iam_' aws-modules/eks/iam.tf
 grep -c '^resource "kubernetes_' aws-modules/eks/iam.tf
 ```
 
-Expected: `13` / `0` / `3` / `0` / `2`
+Expected: `16` / `0` / `3` / `0` / `2`
 
 - [ ] **Step 3: 클러스터 ARN 참조를 문자열 조립으로 바꾼다**
 

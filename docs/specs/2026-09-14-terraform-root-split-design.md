@@ -12,7 +12,7 @@
 
 1. **작업이 직렬화된다.** 누가 apply하면 state 락이 전체를 잠근다. RDS apply는 십수 분 걸린다.
 2. **provider가 섞여 있다.** `provider.tf`의 kubernetes·helm이 `module.eks` 출력에 의존해, 클러스터가 없으면 `plan`조차 돌지 않는다.
-3. **폭발 반경이 하나다.** 서브넷 하나 고치는 plan에 RDS 변경이 같이 뜬다. `modules/rds/main.tf:62`가 `skip_final_snapshot = true`라 사고 비용이 크다.
+3. **폭발 반경이 하나다.** 서브넷 하나 고치는 plan에 RDS 변경이 같이 뜬다. `aws-modules/rds/main.tf:62`가 `skip_final_snapshot = true`라 사고 비용이 크다.
 
 ## 2. 목표
 
@@ -35,7 +35,7 @@ provider 분리(모든 루트가 `aws` 하나만 쓰게 하는 것)는 **이번 
 | 5 | 애플리케이션 매니페스트는 gitops 소유, 그 외 클러스터 구성요소는 현행 유지 | 이번 범위는 루트 분리다. 소유권 재배치는 함께 하지 않는다 |
 | 6 | AWS Load Balancer Controller는 **Terraform이 설치 (현행 유지)** | 분리 이득은 있으나 이번 범위 밖. §12 개선 과제 |
 | 7 | ALB 2개 — 서비스 ALB는 Ingress(컨트롤러 생성), ops ALB는 Terraform | 수명주기가 다르다. 7절 |
-| 8 | IAM은 `eks-iam-base` / `eks` / `eks-iam-workload` 3모듈, 모두 `aws-eks` 루트 안 | 모듈 순환 회피. 6절 |
+| 8 | IAM은 `eks-iam` 1모듈, `aws-eks` 루트 안 | 클러스터 ARN 을 문자열로 조립해 순환을 없앴다. §6 |
 | 9 | ECR은 Infra 밖 (CI/CD 소관) | gitops 부트스트랩 수정이 따라온다. 9절 |
 | 10 | GCP는 이번 범위에서 제외 | 현재 `.tf` 0건, google provider 참조 0건 |
 
@@ -45,9 +45,8 @@ provider 분리(모든 루트가 `aws` 하나만 쓰게 하는 것)는 **이번 
 Infra/
 ├── aws-modules/                재사용 단위. backend 없음
 │   ├── network/
-│   ├── eks-iam-base/           클러스터를 참조하지 않는 IAM
+│   ├── eks-iam/                IAM 역할·정책·부착 전부 (클러스터 미참조)
 │   ├── eks/                    클러스터 · 노드그룹 · 애드온
-│   ├── eks-iam-workload/       클러스터가 있어야 만드는 IAM + Pod Identity
 │   ├── rds/
 │   ├── elasticache/
 │   ├── aws-load-balancer-controller/   IAM · SA · helm_release (현행 그대로)
@@ -79,9 +78,9 @@ aws-eks/
 | 루트 | 내용 | 읽는 것 | 노출하는 것 |
 |---|---|---|---|
 | `aws-core` | VPC(data 참조) · 서브넷 6 · IGW · NAT 2 · 라우팅 3 · S3 엔드포인트 연결 **[나중: NACL]** | — | `vpc_id` `vpc_cidr` `public_subnet_ids` `private_subnet_ids` `private_subnet_cidrs` `db_subnet_ids` |
-| `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4 · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_ca` `cluster_security_group_id` |
-| `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `address` `port` `db_name` `master_user_secret_arn` |
-| `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `endpoint` `secret_arn` |
+| `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4개(`eks` 모듈 3 — karpenter·ebs_csi·bank_of_anthos + `aws-load-balancer-controller` 모듈 1) · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_certificate_authority_data` `cluster_security_group_id` `node_group_name` |
+| `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `db_address` `db_port` `db_name` `master_user_secret_arn` `db_security_group_id` |
+| `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `cache_endpoint` `secret_arn` `user_group_id` `cache_security_group_id` |
 | `aws-ops` | ops ALB · 리스너 · 대상 그룹 · ops-alb-sg · Route53 레코드 **[나중: ECS]** | core | `argocd_target_group_arn` `alb_security_group_id` `alb_dns_name` |
 
 ```
@@ -95,38 +94,41 @@ aws-core ──┬──→ aws-eks
 
 `modules/security` 모듈은 **해체**한다. `db-sg`는 `aws-rds`로, `cache-sg`는 `aws-cache`로, `alb-sg`는 **삭제**한다 — 참조하는 곳이 없고(`module.security.alb_sg_id` 미사용), egress 블록이 없어 아웃바운드가 0인 상태다.
 
-## 6. IAM 모듈을 셋으로 나누는 이유
+## 6. IAM 을 별도 모듈로 두는 방법
 
-IAM을 모듈 하나로 빼면 **모듈 간 순환**이 생겨 apply가 거부된다.
+IAM 이 클러스터 리소스를 참조하면 모듈 간 순환이 생겨 apply 가 거부된다.
 
-```
-eks-iam ──cluster_role_arn, node_role_arn──→ eks
-eks     ──cluster_arn, cluster_name───────→ eks-iam     ← Cycle
-```
+    eks-iam ──cluster_role_arn, node_role_arn──→ eks
+    eks     ──cluster_arn, cluster_name───────→ eks-iam     ← Cycle
 
-클러스터를 참조하는 IAM은 다음과 같다.
+참조를 끊는 방법은 **클러스터 ARN 을 문자열로 조립하는 것**이다.
 
-```
-aws_iam_policy.karpenter_controller        Resource = aws_eks_cluster.main.arn    (iam.tf:219)
-aws_eks_pod_identity_association × 4       cluster_name = aws_eks_cluster.main.name
-aws_eks_access_entry / policy_association  cluster_name = aws_eks_cluster.main.name
-```
+    locals {
+      cluster_arn = "arn:${data.aws_partition.current.partition}:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.cluster_name}"
+    }
 
-따라서 단방향이 되도록 셋으로 나눈다.
+`var.cluster_name` 은 루트가 넘기는 리터럴이고 `data` 두 개는 plan 시점에 확정되므로
+클러스터가 없어도 계산된다. IAM 정책의 Resource 는 대상이 실재하지 않아도 유효하다.
 
-```
-eks-iam-base      cluster role(+EKSClusterPolicy) · node role(+WorkerNode/ECRPullOnly/CNI)
-                  node_secrets 정책
-        ↓
-eks               클러스터 · 노드그룹 · 애드온 6종
-        ↓
-eks-iam-workload  karpenter · ebs-csi · alb-controller · bank-of-anthos
-                  각 role/policy/attachment + Pod Identity 연결 · access entry
-```
+그 결과 IAM 전체가 클러스터를 참조하지 않게 되어 **모듈 하나로 충분하다.**
 
-`eks-iam-workload`는 `node_role_arn`을 base에서 직접 받는다(Karpenter의 `iam:PassRole` 대상). 단방향이므로 순환이 아니다. 세 모듈 모두 **`aws-eks` 루트 하나**가 호출한다.
+    eks-iam   IAM 역할·정책·부착 전부 (클러스터 미참조)
+         ↓
+    eks       클러스터 · 노드그룹 · 애드온 · Pod Identity 연결 · access entry
 
-**IRSA가 아니라 EKS Pod Identity를 쓴다.** `aws_iam_openid_connect_provider`는 없고 신뢰 정책이 `Service = "pods.eks.amazonaws.com"`이다. 빠진 것이 아니라 선택이다.
+`aws_eks_pod_identity_association` 과 `aws_eks_access_entry` 는 EKS 리소스이므로
+`eks` 모듈에 둔다. 이렇게 해야 `aws_eks_addon.ebs_csi` 의 `depends_on` 이
+같은 모듈 안에서 해결된다 — 다른 모듈로 빼면 `eks ↔ iam` 순환이 다시 생긴다.
+
+역할 부착 순서는 output 의 `depends_on` 으로 보장한다.
+
+    output "cluster_role_arn" {
+      value      = aws_iam_role.cluster.arn
+      depends_on = [aws_iam_role_policy_attachment.cluster_eks_policy]
+    }
+
+**IRSA 가 아니라 EKS Pod Identity 를 쓴다.** `aws_iam_openid_connect_provider` 는 없고
+신뢰 정책이 `Service = "pods.eks.amazonaws.com"` 이다. 빠진 것이 아니라 선택이다.
 
 ## 7. ALB 설계
 
@@ -207,7 +209,7 @@ s3://boa-terraform-state-6416/
 
 1. `git mv`로 `modules/*` → `aws-modules/*` (이력 보존)
 2. `modules/security` 해체 — db-sg·cache-sg 이관, alb-sg 삭제
-3. `aws-modules/eks`에서 IAM을 `eks-iam-base` / `eks-iam-workload`로 분리
+3. `aws-modules/eks`에서 IAM을 `eks-iam` 1모듈로 분리
 4. `modules/aws-load-balancer-controller`는 **그대로 옮기기만 한다** — `aws-modules/aws-load-balancer-controller`. 내용 변경 없음
 5. 루트 5개 생성 (`backend.tf` · `providers.tf` · `main.tf` · `variables.tf` · `outputs.tf`)
 6. 기존 루트 `main.tf` · `backend.tf` · `provider.tf` 제거
@@ -237,8 +239,8 @@ s3://boa-terraform-state-6416/
 
 | 문제 | 위치 | 비고 |
 |---|---|---|
-| 노드 역할이 Secrets Manager `/boa/*`에 직접 접근 | `modules/eks/iam.tf:325–355` | 그 노드의 모든 파드가 IMDS로 접근 가능. Pod Identity를 쓰는 취지를 깨뜨린다. **단, Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인 필요** |
-| Pod Identity 네임스페이스가 `default` | `modules/eks/iam.tf:427` | 라이브 앱 네임스페이스는 `bank-of-anthos`. 다르면 파드가 자격증명을 못 받는다 |
-| ALB 컨트롤러 SA의 `automount_service_account_token = false` | `modules/aws-load-balancer-controller/main.tf:43` | 컨트롤러는 kube API 토큰이 필요하다. Helm 차트가 파드 레벨에서 켜주는지 확인 필요 |
-| EKS 퍼블릭 엔드포인트에 코드 서버 IP 하드코딩 | `main.tf:59` (`15.165.176.99/32`) | 인스턴스 재기동 시 변경된다. 변수화 필요 |
-| 루트 `outputs.tf` 부재 | — | gitops 부트스트랩이 요구하는 output 9종이 없다 |
+| 노드 역할이 Secrets Manager `/boa/*`에 직접 접근 | `aws-modules/eks-iam/main.tf:320-325` | 그 노드의 모든 파드가 IMDS로 접근 가능. Pod Identity를 쓰는 취지를 깨뜨린다. **단, Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인 필요** |
+| Pod Identity 네임스페이스가 `default` | `aws-modules/eks/iam.tf:27` | 라이브 앱 네임스페이스는 `bank-of-anthos`. 다르면 파드가 자격증명을 못 받는다 |
+| ALB 컨트롤러 SA의 `automount_service_account_token = false` | `aws-modules/aws-load-balancer-controller/main.tf:43` | 컨트롤러는 kube API 토큰이 필요하다. Helm 차트가 파드 레벨에서 켜주는지 확인 필요 |
+| EKS 퍼블릭 엔드포인트에 코드 서버 IP 하드코딩 | `aws-eks/main.tf:29` (`15.165.176.99/32`) | 인스턴스 재기동 시 변경된다. 변수화 필요 |
+| 루트 `outputs.tf`가 gitops 요구와 다름 | 각 루트 `outputs.tf` | 네 루트 모두 `outputs.tf`는 있다. 다만 gitops 부트스트랩이 요구하는 output 9종(`aws_region` `aws_account_id` `ecr_registry` `eks_cluster_name` `rds_address` `rds_port` `rds_master_user_secret_arn` `rds_app_secret_arn` `rds_bootstrap_db_name`)과 이름·구성이 다르다 — 예: `aws-rds`는 `db_address`·`db_port`를 내지만 `rds_address`·`rds_port`가 아니고, `aws_region`·`aws_account_id`·`ecr_registry`·`rds_app_secret_arn`·`rds_bootstrap_db_name`은 어느 루트에도 없다 |
