@@ -12,7 +12,7 @@
 
 1. **작업이 직렬화된다.** 누가 apply하면 state 락이 전체를 잠근다. RDS apply는 십수 분 걸린다.
 2. **provider가 섞여 있다.** `provider.tf`의 kubernetes·helm이 `module.eks` 출력에 의존해, 클러스터가 없으면 `plan`조차 돌지 않는다.
-3. **폭발 반경이 하나다.** 서브넷 하나 고치는 plan에 RDS 변경이 같이 뜬다. `modules/rds/main.tf:62`가 `skip_final_snapshot = true`라 사고 비용이 크다.
+3. **폭발 반경이 하나다.** 서브넷 하나 고치는 plan에 RDS 변경이 같이 뜬다. `aws-modules/rds/main.tf:62`가 `skip_final_snapshot = true`라 사고 비용이 크다.
 
 ## 2. 목표
 
@@ -78,9 +78,9 @@ aws-eks/
 | 루트 | 내용 | 읽는 것 | 노출하는 것 |
 |---|---|---|---|
 | `aws-core` | VPC(data 참조) · 서브넷 6 · IGW · NAT 2 · 라우팅 3 · S3 엔드포인트 연결 **[나중: NACL]** | — | `vpc_id` `vpc_cidr` `public_subnet_ids` `private_subnet_ids` `private_subnet_cidrs` `db_subnet_ids` |
-| `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4 · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_ca` `cluster_security_group_id` |
-| `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `address` `port` `db_name` `master_user_secret_arn` |
-| `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `endpoint` `secret_arn` |
+| `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4개(`eks` 모듈 3 — karpenter·ebs_csi·bank_of_anthos + `aws-load-balancer-controller` 모듈 1) · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_certificate_authority_data` `cluster_security_group_id` `node_group_name` |
+| `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `db_address` `db_port` `db_name` `master_user_secret_arn` `db_security_group_id` |
+| `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `cache_endpoint` `secret_arn` `user_group_id` `cache_security_group_id` |
 | `aws-ops` | ops ALB · 리스너 · 대상 그룹 · ops-alb-sg · Route53 레코드 **[나중: ECS]** | core | `argocd_target_group_arn` `alb_security_group_id` `alb_dns_name` |
 
 ```
@@ -239,8 +239,8 @@ s3://boa-terraform-state-6416/
 
 | 문제 | 위치 | 비고 |
 |---|---|---|
-| 노드 역할이 Secrets Manager `/boa/*`에 직접 접근 | `modules/eks/iam.tf:325–355` | 그 노드의 모든 파드가 IMDS로 접근 가능. Pod Identity를 쓰는 취지를 깨뜨린다. **단, Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인 필요** |
-| Pod Identity 네임스페이스가 `default` | `modules/eks/iam.tf:427` | 라이브 앱 네임스페이스는 `bank-of-anthos`. 다르면 파드가 자격증명을 못 받는다 |
-| ALB 컨트롤러 SA의 `automount_service_account_token = false` | `modules/aws-load-balancer-controller/main.tf:43` | 컨트롤러는 kube API 토큰이 필요하다. Helm 차트가 파드 레벨에서 켜주는지 확인 필요 |
-| EKS 퍼블릭 엔드포인트에 코드 서버 IP 하드코딩 | `main.tf:59` (`15.165.176.99/32`) | 인스턴스 재기동 시 변경된다. 변수화 필요 |
-| 루트 `outputs.tf` 부재 | — | gitops 부트스트랩이 요구하는 output 9종이 없다 |
+| 노드 역할이 Secrets Manager `/boa/*`에 직접 접근 | `aws-modules/eks-iam/main.tf:320-325` | 그 노드의 모든 파드가 IMDS로 접근 가능. Pod Identity를 쓰는 취지를 깨뜨린다. **단, Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인 필요** |
+| Pod Identity 네임스페이스가 `default` | `aws-modules/eks/iam.tf:27` | 라이브 앱 네임스페이스는 `bank-of-anthos`. 다르면 파드가 자격증명을 못 받는다 |
+| ALB 컨트롤러 SA의 `automount_service_account_token = false` | `aws-modules/aws-load-balancer-controller/main.tf:43` | 컨트롤러는 kube API 토큰이 필요하다. Helm 차트가 파드 레벨에서 켜주는지 확인 필요 |
+| EKS 퍼블릭 엔드포인트에 코드 서버 IP 하드코딩 | `aws-eks/main.tf:29` (`15.165.176.99/32`) | 인스턴스 재기동 시 변경된다. 변수화 필요 |
+| 루트 `outputs.tf`가 gitops 요구와 다름 | 각 루트 `outputs.tf` | 네 루트 모두 `outputs.tf`는 있다. 다만 gitops 부트스트랩이 요구하는 output 9종(`aws_region` `aws_account_id` `ecr_registry` `eks_cluster_name` `rds_address` `rds_port` `rds_master_user_secret_arn` `rds_app_secret_arn` `rds_bootstrap_db_name`)과 이름·구성이 다르다 — 예: `aws-rds`는 `db_address`·`db_port`를 내지만 `rds_address`·`rds_port`가 아니고, `aws_region`·`aws_account_id`·`ecr_registry`·`rds_app_secret_arn`·`rds_bootstrap_db_name`은 어느 루트에도 없다 |

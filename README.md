@@ -21,13 +21,13 @@ Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreS
 └── docs/specs/                 설계 문서
 ```
 
-각 루트는 `backend.tf` · `versions.tf` · `providers.tf` · `main.tf` · `variables.tf` · `outputs.tf` · `terraform.tfvars`(.gitignore) · `.terraform.lock.hcl`로 구성됩니다. 모듈 목록과 역할은 [설계 문서 §4](docs/specs/2026-09-14-terraform-root-split-design.md)를 참조하세요.
+네 루트 공통 구성은 `backend.tf` · `versions.tf` · `providers.tf` · `main.tf` · `outputs.tf` · `.terraform.lock.hcl`입니다. `aws-eks`만 추가로 `variables.tf`(`code_server_role_arn`) · `rbac.tf` · `terraform.tfvars`(.gitignore)를 가집니다. 모듈 목록과 역할은 [설계 문서 §4](docs/specs/2026-09-14-terraform-root-split-design.md)를 참조하세요.
 
 ## 구성 개요
 
 - Network(`aws-core`): 기존 VPC를 재사용하고, 2개 가용 영역에 Public, Private, DB Subnet을 구성합니다. Private Subnet은 가용 영역별 NAT Gateway를 통해 외부로 통신합니다.
 - EKS(`aws-eks`): Private Subnet에 Kubernetes 클러스터와 Managed Node Group을 생성합니다. VPC CNI, CoreDNS, kube-proxy, EBS CSI, Pod Identity Agent 애드온과 AWS Load Balancer Controller를 함께 설치합니다. IAM은 `eks-iam` 모듈이 별도로 담당합니다(클러스터 미참조 — [설계 문서 §6](docs/specs/2026-09-14-terraform-root-split-design.md) 참조).
-- RDS(`aws-rds`): DB Subnet에 암호화된 PostgreSQL Multi-AZ 인스턴스를 생성합니다. EKS 클러스터 보안 그룹을 참조해 인바운드를 허용하며, Master 비밀번호는 AWS Secrets Manager에서 관리하고 백업·Performance Insights·Enhanced Monitoring을 활성화합니다.
+- RDS(`aws-rds`): DB Subnet에 암호화된 PostgreSQL Multi-AZ 인스턴스를 생성합니다. 인바운드 5432는 EKS 클러스터 보안 그룹이 아니라 **프라이빗 서브넷 CIDR**로 허용합니다(`aws-rds`가 `aws-eks`를 몰라도 되게 하는 설계 — 설계 문서 결정 3). Master 비밀번호는 AWS Secrets Manager에서 관리하고 백업·Performance Insights·Enhanced Monitoring을 활성화합니다.
 - ElastiCache(`aws-cache`): Private Subnet에 Serverless Valkey 캐시를 생성합니다. 접속 비밀번호는 무작위로 생성해 Secrets Manager에 저장하고 RBAC 사용자 그룹에 연결합니다.
 - State: 루트마다 별도 state key로 같은 S3 Bucket에 암호화 저장하며, `use_lockfile`(S3 네이티브 락)로 동시 실행을 방지합니다. 자세한 내용은 아래 "루트 구조" 절을 참조하세요.
 
