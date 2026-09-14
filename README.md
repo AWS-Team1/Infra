@@ -76,9 +76,9 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 | `aws-eks` | `aws/eks/terraform.tfstate` | aws · kubernetes · helm | core |
 | `aws-rds` | `aws/rds/terraform.tfstate` | aws | core |
 | `aws-cache` | `aws/cache/terraform.tfstate` | aws | core |
-| `aws-ops` | `aws/ops/terraform.tfstate` | aws | — |
+| `aws-ops` | `aws/ops/terraform.tfstate` | aws | core |
 
-`aws-ops` 는 현재 ECR 만 갖고 있어 의존이 없다. ops ALB 가 들어오면 core 를 읽게 된다.
+`aws-ops` 는 ECR 과 ops ALB 를 갖는다. ALB 가 VPC·퍼블릭 서브넷을 필요로 하므로 core 를 읽는다.
 
 버킷은 `boa-terraform-state-6416` (ap-northeast-2). `use_lockfile = true` 라
 락 객체가 `<key>.tflock` 으로 key 마다 따로 생긴다. DynamoDB 테이블은 쓰지 않는다.

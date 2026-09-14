@@ -51,7 +51,7 @@ Infra/
 │   ├── elasticache/
 │   ├── ecr/                            프라이빗 리포지터리 + 수명주기 정책
 │   ├── aws-load-balancer-controller/   IAM · SA · helm_release (현행 그대로)
-│   └── ops-alb/                        ops ALB. ALB 컨트롤러와 무관 [미구현]
+│   └── ops-alb/                        ops ALB. ALB 컨트롤러와 무관
 ├── gcp-modules/                (GCP 착수 시)
 ├── aws-core/                   루트
 ├── aws-eks/
@@ -82,7 +82,7 @@ aws-eks/
 | `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4개(`eks` 모듈 3 — karpenter·ebs_csi·bank_of_anthos + `aws-load-balancer-controller` 모듈 1) · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_certificate_authority_data` `cluster_security_group_id` `node_group_name` |
 | `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `db_address` `db_port` `db_name` `master_user_secret_arn` `db_security_group_id` |
 | `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `cache_endpoint` `secret_arn` `user_group_id` `cache_security_group_id` |
-| `aws-ops` | **ECR 6개 + 수명주기 정책** · [미구현: ops ALB · 리스너 · 대상 그룹 · ops-alb-sg · Route53 · ECS] | **없음** (ECR만 있는 동안) | `ecr_registry` `ecr_repository_urls` `ecr_repository_names` `ecr_repository_arns` |
+| `aws-ops` | ECR 6개 + 수명주기 · **ops ALB · 리스너 2 · 대상 그룹 · ops-alb-sg · Route53 A** · [미구현: ECS] | core | `ecr_registry` `ecr_repository_urls` `argocd_target_group_arn` `ops_alb_security_group_id` `ops_alb_https_listener_arn` |
 
 ```
 aws-core ──┬──→ aws-eks
