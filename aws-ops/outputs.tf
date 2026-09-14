@@ -17,3 +17,32 @@ output "ecr_repository_names" {
 output "ecr_repository_arns" {
   value = module.ecr.repository_arns
 }
+
+# ---------------------------------------------------------
+# ops ALB
+# ---------------------------------------------------------
+
+output "ops_alb_dns_name" {
+  value = module.ops_alb.alb_dns_name
+}
+
+# gitops 의 aws.env 에 ALB_SECURITY_GROUP_ID 로 넣는다.
+# TargetGroupBinding 의 spec.networking.ingress 가 이 값을 참조해야
+# 컨트롤러가 파드 SG 를 열어준다.
+output "ops_alb_security_group_id" {
+  value = module.ops_alb.alb_security_group_id
+}
+
+# gitops 의 aws.env 의 ARGOCD_TARGET_GROUP_ARN 에 넣는다.
+output "argocd_target_group_arn" {
+  value = module.ops_alb.argocd_target_group_arn
+}
+
+output "argocd_url" {
+  value = module.ops_alb.argocd_url
+}
+
+# 관측성 대상 그룹을 붙일 때 쓸 리스너 ARN.
+output "ops_alb_https_listener_arn" {
+  value = module.ops_alb.https_listener_arn
+}
