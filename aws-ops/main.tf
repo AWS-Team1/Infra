@@ -53,10 +53,11 @@ module "ops_alb" {
   public_subnet_ids    = data.terraform_remote_state.core.outputs.public_subnet_ids
   private_subnet_cidrs = data.terraform_remote_state.core.outputs.private_subnet_cidrs
 
-  # ACM 과 DNS 는 Terraform 관리 대상이 아니다. 이미 있는 것을 읽는다.
+  # ACM 인증서는 이미 발급된 것을 읽어 쓴다.
   certificate_domain = "*.bespinglobal.site"
-  hosted_zone_name   = "bespinglobal.site"
 
+  # 리스너 규칙의 Host 조건에만 쓴다. 이 이름의 DNS 레코드는 Terraform 이 만들지 않는다
+  # — bespinglobal.site 는 app · prod · origin 이 함께 쓰는 공용 호스팅 영역이다.
   argocd_host        = "argocd.bespinglobal.site"
   argocd_target_port = 8080
 }

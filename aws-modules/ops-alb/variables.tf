@@ -25,13 +25,10 @@ variable "certificate_domain" {
   type        = string
 }
 
-variable "hosted_zone_name" {
-  description = "Route53 퍼블릭 호스팅 영역 이름 (끝 점 없이)"
-  type        = string
-}
-
+# 리스너 규칙의 Host 헤더 조건에 쓴다. DNS 레코드는 이 모듈이 만들지 않으므로
+# 이 이름을 ALB 로 보내는 레코드는 밖에서 따로 잡아야 한다.
 variable "argocd_host" {
-  description = "ArgoCD 접속 호스트명. 리스너 규칙과 Route53 레코드에 쓴다"
+  description = "ArgoCD 접속 호스트명. 리스너 규칙의 host-header 조건에 쓴다"
   type        = string
 }
 
