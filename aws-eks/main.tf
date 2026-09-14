@@ -33,7 +33,7 @@ module "eks" {
   node_group_name = "boa-eks-node-group"
 
   node_instance_types = [
-    "t3.medium"
+    "t3.large"
   ]
   region = "ap-northeast-2"
 
