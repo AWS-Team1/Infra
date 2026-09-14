@@ -17,3 +17,8 @@ output "master_user_secret_arn" {
 output "db_security_group_id" {
   value = module.rds.db_security_group_id
 }
+
+# aws-dms 가 FreeStorageSpace 알람 디멘션에 쓴다.
+output "db_instance_identifier" {
+  value = module.rds.db_instance_identifier
+}
