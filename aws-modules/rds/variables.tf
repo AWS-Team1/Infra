@@ -67,3 +67,11 @@ variable "private_subnet_cidrs" {
   description = "5432 인바운드를 허용할 프라이빗 서브넷 CIDR"
   type        = list(string)
 }
+
+# AWS DMS 의 CDC 가 논리 복제 슬롯을 만들려면 필요하다.
+# 켜는 순간이 아니라 "다음 재부팅"에 반영된다(정적 파라미터).
+variable "enable_logical_replication" {
+  description = "rds.logical_replication 활성화 여부. DMS CDC 의 전제 조건"
+  type        = bool
+  default     = false
+}

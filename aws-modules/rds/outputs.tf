@@ -29,3 +29,9 @@ output "master_user_secret_arn" {
 output "db_security_group_id" {
   value = aws_security_group.db.id
 }
+
+# aws-dms 의 FreeStorageSpace 알람 디멘션에 쓴다.
+# (db_instance_identifier 는 이 파일 위쪽에 이미 있다)
+output "db_instance_arn" {
+  value = aws_db_instance.main.arn
+}
