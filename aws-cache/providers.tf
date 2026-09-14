@@ -8,7 +8,7 @@ provider "aws" {
       Project   = "boa"
       Component = "cache"
       ManagedBy = "terraform"
-      Repo      = "swoobuntu/Infra"
+      Repo      = "AWS-TEAM1-DEV/Infra"
     }
   }
 }

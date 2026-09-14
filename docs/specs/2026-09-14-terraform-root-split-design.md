@@ -334,6 +334,7 @@ s3://boa-terraform-state-6416/
 | 12 | 전 리소스 선언 위에 역할·연결 주석 부착 | 완료 |
 | 13 | ops ALB에서 Route53 레코드 제거, `ops_alb_zone_id` output 추가 (§7) | 완료 |
 | 14 | 저장소 조직 이관에 따른 remote 주소 변경 | 로컬 5개 완료 · **코드 서버 미완** |
+| 15 | 5개 루트 `default_tags`의 `Repo`를 `AWS-TEAM1-DEV/Infra`로 | 완료 |
 
 **아직 apply한 적이 없어 state 마이그레이션이 필요 없었다.** 구조를 바꾸기에 가장 저렴한 시점이었다. apply 이후였다면 루트별 `terraform state mv`가 필요했다.
 
@@ -349,7 +350,6 @@ s3://boa-terraform-state-6416/
 | NACL 설계 | 결정 3의 보완책. 서브넷 경계 규칙 | **루트 분리는 끝났다.** 운영 전환 전 |
 | `boa/k8s` 25개 이관 | §11-7 | gitops 부트스트랩 실행 전 |
 | **ArgoCD DNS 레코드 주체** | Terraform이 안 만든다(결정 11). 고아 CNAME 수정 / 삭제 후 A(alias) / 다른 호스트명 중 택1. 영역이 공용이라 팀 확인 필요 | `aws-ops` apply 후, ArgoCD 노출 전 |
-| `Repo` 태그가 옛 주소 | 5개 루트 `providers.tf:11`이 `swoobuntu/Infra`. 조직 이관으로 어긋났다. **아직 apply한 적이 없어 AWS에는 반영 안 됨** | 첫 apply 전 |
 | 브랜치와 state의 관계 | `backend.tf` key가 브랜치와 무관하다. `dev`·`release`에서 각각 apply하면 같은 state를 번갈아 덮어쓴다. 현재는 **`dev` 한 곳에서만 apply** | dev/prod 분리 결정 시 |
 | **output 계약 맞추기** | 루트가 5개로 갈라져 gitops가 요구하는 output 9종이 세 루트에 흩어졌다. 집계 루트 / 스크립트 수정 / `aws.env` 직접 기입 중 택1. §13.1 | gitops 부트스트랩 실행 전 |
 | `rds_app_secret_arn` 신설 | 애플리케이션 전용 DB 시크릿. master와 같으면 부트스트랩이 거부한다 | 위와 동시 |
