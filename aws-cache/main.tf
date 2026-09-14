@@ -1,3 +1,4 @@
+# aws-core 가 만든 VPC·서브넷을 읽는다. aws-eks 는 참조하지 않는다.
 data "terraform_remote_state" "core" {
   backend = "s3"
 

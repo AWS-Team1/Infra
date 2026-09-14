@@ -4,6 +4,7 @@
 # db SG 와 같은 이유로 CIDR 허용을 쓴다.
 # aws-cache 루트가 aws-eks 를 참조하지 않는다.
 
+# Valkey 앞단 SG. aws_elasticache_serverless_cache 의 security_group_ids 로 들어간다.
 resource "aws_security_group" "cache" {
   name        = "${var.project_name}-cache-sg"
   description = "Security group for ElastiCache Valkey"
@@ -14,6 +15,7 @@ resource "aws_security_group" "cache" {
   }
 }
 
+# 프라이빗 서브넷 CIDR 마다 6379 인바운드를 하나씩 연다. db SG 와 같은 방식이다.
 resource "aws_vpc_security_group_ingress_rule" "cache_valkey" {
   for_each = toset(var.private_subnet_cidrs)
 

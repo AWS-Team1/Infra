@@ -9,6 +9,7 @@ data "aws_acm_certificate" "this" {
   most_recent = true
 }
 
+# argocd A 레코드를 넣을 퍼블릭 호스팅 영역.
 data "aws_route53_zone" "this" {
   name         = var.hosted_zone_name
   private_zone = false
@@ -31,6 +32,7 @@ resource "aws_security_group" "this" {
   }
 }
 
+# 80 인바운드. 실제 처리는 안 하고 아래 리스너가 443 으로 넘긴다.
 resource "aws_vpc_security_group_ingress_rule" "http" {
   security_group_id = aws_security_group.this.id
 
@@ -46,6 +48,7 @@ resource "aws_vpc_security_group_ingress_rule" "http" {
   }
 }
 
+# 443 인바운드. ArgoCD UI 트래픽이 여기로 들어온다.
 resource "aws_vpc_security_group_ingress_rule" "https" {
   security_group_id = aws_security_group.this.id
 
@@ -84,6 +87,8 @@ resource "aws_vpc_security_group_egress_rule" "to_targets" {
 # APPLICATION LOAD BALANCER
 # ===================================================
 
+# 운영 도구용 ALB. 퍼블릭 서브넷 2개 AZ 에 걸친다.
+# 서비스 ALB(Ingress 가 만드는 것)와 별개이고, 클러스터를 재생성해도 남는다.
 resource "aws_lb" "this" {
   name               = "${var.project_name}-ops-alb"
   load_balancer_type = "application"
@@ -141,6 +146,7 @@ resource "aws_lb_target_group" "argocd" {
 # LISTENERS
 # ===================================================
 
+# 80 은 처리하지 않고 443 으로 영구 리다이렉트만 한다.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.this.arn
   port              = 80
@@ -212,6 +218,8 @@ resource "aws_lb_listener_rule" "argocd" {
 # DNS
 # ===================================================
 
+# argocd.bespinglobal.site 를 ALB 로 보내는 별칭 레코드.
+# 별칭이라 ALB DNS 가 바뀌어도 따라간다.
 resource "aws_route53_record" "argocd" {
   zone_id = data.aws_route53_zone.this.zone_id
   name    = var.argocd_host
