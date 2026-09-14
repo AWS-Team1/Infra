@@ -1,10 +1,18 @@
 # Terraform 루트 분리 설계
 
 - 작성일: 2026-09-14 (최종 갱신 2026-09-14)
-- 대상 저장소: `swoobuntu/Infra` (브랜치 `Karfa-choi`)
+- 대상 저장소: `AWS-TEAM1-DEV/Infra` (2026-09-14 조직 이관. 이전 `swoobuntu/Infra`)
+- 작업 브랜치: `dev` (이전 `Karfa-choi`. `dev` · `release` · `Karfa-choi` 모두 같은 지점)
 - 선행 커밋: `97a01b6` (boa- 접두사 전환, 기존 VPC 재사용)
-- **구현 상태: 루트 분리·태그·ECR·ops ALB·주석 반영 완료.** 루트 5개 `validate` 통과.
-  `terraform apply`·`plan`은 아직 한 번도 실행하지 않았다. 남은 것은 §11의 7번(`boa/k8s` 이관)뿐이다.
+- **구현 상태: 루트 분리·태그·ECR·ops ALB·주석·DNS 제거까지 반영 완료.** 루트 5개 `validate` 통과.
+  `terraform apply`·`plan`은 아직 한 번도 실행하지 않았고 state 버킷은 비어 있다.
+  남은 것은 §11의 7번(`boa/k8s` 이관)과 14번(코드 서버 remote)이다.
+
+**2026-09-14 계정 현황 확인.** EKS 클러스터 0개, RDS 0개, ElastiCache 0개, ALB 0개,
+`boa-` IAM 역할 0개, state 버킷 비어 있음. 대상 VPC에 IGW 없음(코드가 새로 만든다),
+기존 서브넷은 `192.168.0.0/24` · `192.168.1.0/24`뿐이라 신규 6개와 겹치지 않는다.
+**충돌 지점은 Route53 고아 CNAME 하나뿐이었고, 결정 11로 해소했다.**
+남아 있는 기존 자원은 접두사 없는 ECR 6개(이미지 포함)와 그 CNAME이다.
 
 이 문서는 **설계와 현재 코드를 함께** 기술한다. 이미 구현된 항목은 현재형으로,
 검토 끝에 폐기한 안은 "폐기"로 명시해 남긴다.
@@ -43,6 +51,7 @@ provider 분리(모든 루트가 `aws` 하나만 쓰게 하는 것)는 **이번 
 | 8 | IAM은 `eks-iam` **1모듈**, `aws-eks` 루트 안 | 클러스터 ARN 을 문자열로 조립해 순환을 없앴다. 초안의 `eks-iam-base`/`eks-iam-workload` **2분할안은 폐기**했다. §6 |
 | 9 | ECR은 `aws-ops` 루트가 소유한다 **(2026-09-14 변경)** | 당초 "Infra 밖(CI/CD 소관)"이었으나 뒤집었다. 9절 |
 | 10 | GCP는 이번 범위에서 제외 | 현재 `.tf` 0건, google provider 참조 0건 |
+| 11 | **DNS 레코드는 Terraform이 만들지 않는다 (2026-09-14 추가)** | 호스팅 영역이 공용이고, 대상 이름에 고아 CNAME이 이미 있어 충돌한다. 원래 이 저장소에 route53 코드는 없었다. §7 |
 
 ## 4. 디렉터리 구조
 
@@ -96,7 +105,7 @@ aws-eks/
 | `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4개(`eks` 모듈 3 — karpenter·ebs_csi·bank_of_anthos + `aws-load-balancer-controller` 모듈 1) · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_certificate_authority_data` `cluster_security_group_id` `node_group_name` |
 | `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `db_address` `db_port` `db_name` `master_user_secret_arn` `db_security_group_id` |
 | `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `cache_endpoint` `secret_arn` `user_group_id` `cache_security_group_id` |
-| `aws-ops` | ECR 6개 + 수명주기 · **ops ALB · 리스너 2 · 대상 그룹 · ops-alb-sg · Route53 A** · [미구현: ECS] | core | `ecr_registry` `ecr_repository_urls` `ecr_repository_names` `ecr_repository_arns` `ops_alb_dns_name` `ops_alb_security_group_id` `argocd_target_group_arn` `argocd_url` `ops_alb_https_listener_arn` |
+| `aws-ops` | ECR 6개 + 수명주기 · **ops ALB · 리스너 2 · 대상 그룹 · ops-alb-sg** · [미구현: ECS] · <s>Route53</s> **DNS는 관리하지 않는다(§7)** | core | `ecr_registry` `ecr_repository_urls` `ecr_repository_names` `ecr_repository_arns` `ops_alb_dns_name` `ops_alb_zone_id` `ops_alb_security_group_id` `argocd_target_group_arn` `argocd_url` `ops_alb_https_listener_arn` |
 
 ```
 aws-core ──┬──→ aws-eks
@@ -183,10 +192,32 @@ IAM 이 클러스터 리소스를 참조하면 모듈 간 순환이 생겨 apply
 | 대상 등록 | 컨트롤러가 Ingress backend에서 자동 | `TargetGroupBinding`으로 명시 |
 | 수명 | Ingress 삭제 시 함께 삭제 | Terraform이 지울 때까지 유지 |
 | 호스트 | `app.bespinglobal.site` | `argocd.bespinglobal.site` |
+| DNS 레코드 | 컨트롤러도 Terraform도 안 만든다 | **Terraform이 안 만든다 (아래)** |
 
 수명주기가 다르기 때문에 관리 방식이 다르다. ArgoCD·Grafana는 클러스터를 재생성해도 접속 주소가 유지돼야 하고, DR 시 GCP 쪽을 가리키도록 바꿀 수도 있다.
 
-**인증서는 공유한다.** `*.bespinglobal.site` 와일드카드가 이미 발급돼 있다(`arn:aws:acm:ap-northeast-2:769413326616:certificate/1c81ee2e-edbc-4a42-961d-816d571767ab`, 상태 ISSUED). Route53 퍼블릭 호스팅 영역 `bespinglobal.site.`(`Z03791674GY6T60MVQ4V`)도 같은 계정에 있다. ACM은 Terraform 관리 대상이 아니며 `data "aws_acm_certificate"`로 참조한다.
+**인증서는 공유한다.** `*.bespinglobal.site` 와일드카드가 이미 발급돼 있다(`arn:aws:acm:ap-northeast-2:769413326616:certificate/1c81ee2e-edbc-4a42-961d-816d571767ab`, 상태 ISSUED). ACM은 Terraform 관리 대상이 아니며 `data "aws_acm_certificate"`로 참조한다.
+
+**와일드카드는 한 단계만 덮는다.** `boa-argocd.bespinglobal.site`는 덮이지만 `argocd.boa.bespinglobal.site`는 덮이지 않는다. 호스트명을 바꿀 때 점을 하나 더 넣으면 HTTPS에서 인증서 오류가 난다.
+
+### DNS는 Terraform이 관리하지 않는다 (2026-09-14 결정)
+
+ops ALB 모듈은 처음에 `aws_route53_record.argocd`로 A(alias) 레코드를 만들었다. **뺐다.**
+
+퍼블릭 호스팅 영역 `bespinglobal.site.`(`Z03791674GY6T60MVQ4V`)는 이 계정에 있지만 **공용이다.** 조회 결과 `app` · `prod` · `origin` · 루트 A · ACM 검증용 CNAME이 함께 들어 있다. 이 스택이 소유한 영역이 아니다.
+
+거기에 `argocd.bespinglobal.site`에 **이미 CNAME이 있다** — 이미 삭제된 ALB(`k8s-argocd-argocdse-867c2af99f-...`)를 가리키는 고아 레코드다(2026-09-14 확인, 계정에 ALB 0개). DNS 규칙상 **CNAME은 같은 이름의 다른 타입과 공존할 수 없어** A(alias) 생성이 충돌한다.
+
+애초에 **이 저장소에 route53 코드는 없었다.** ops ALB를 만들며 새로 들어온 것이라 원래 범위로 되돌렸다.
+
+그 결과 `aws-ops`가 내는 것은 ALB까지이고, 레코드는 밖에서 잡는다.
+
+    ops_alb_dns_name   A(alias) 의 대상 이름
+    ops_alb_zone_id    A(alias) 의 대상 영역 ID
+
+`var.argocd_host`는 남긴다. **리스너 규칙의 `host_header` 조건에 쓰이기 때문**이다. 이 이름으로 오지 않은 요청은 443 기본 동작인 404로 떨어진다. 따라서 밖에서 잡는 레코드의 이름이 `argocd_host`와 **같아야 한다.**
+
+고아 CNAME 처리는 미정이다 — 남의 레코드가 섞인 영역이라 팀 확인이 필요하다. 선택지는 (a) 기존 CNAME의 값을 새 ALB DNS 이름으로 수정(타입이 그대로라 충돌 없음), (b) 고아 삭제 후 A(alias) 신규 생성, (c) `boa-argocd` 등 다른 호스트명 사용.
 
 ### ops ALB 연결 시 맞춰야 할 네 가지
 
@@ -301,6 +332,9 @@ s3://boa-terraform-state-6416/
 | 10 | `aws-modules/ecr` 신설, `aws-ops`가 호출 (§9) | 완료 |
 | 11 | `aws-modules/ops-alb` 신설, `aws-ops`가 호출 (§7) | 완료 |
 | 12 | 전 리소스 선언 위에 역할·연결 주석 부착 | 완료 |
+| 13 | ops ALB에서 Route53 레코드 제거, `ops_alb_zone_id` output 추가 (§7) | 완료 |
+| 14 | 저장소 조직 이관에 따른 remote 주소 변경 | 로컬 5개 완료 · **코드 서버 미완** |
+| 15 | 5개 루트 `default_tags`의 `Repo`를 `AWS-TEAM1-DEV/Infra`로 | 완료 |
 
 **아직 apply한 적이 없어 state 마이그레이션이 필요 없었다.** 구조를 바꾸기에 가장 저렴한 시점이었다. apply 이후였다면 루트별 `terraform state mv`가 필요했다.
 
@@ -314,7 +348,9 @@ s3://boa-terraform-state-6416/
 |---|---|---|
 | **ALB 컨트롤러 분리** | `helm_release`·`ServiceAccount`·k8s RBAC를 `aws-eks`에서 빼면 이 루트가 `aws` provider 하나가 되어 클러스터 상태와 무관하게 `plan`이 돈다. 빼는 방식은 코드 서버의 helm 명령(권장) 또는 렌더한 매니페스트. 같이 고칠 것 — 차트 버전 고정(현재 `version` 인자 없음), `serviceAccount.create=true`로 전환(현재 `automount_service_account_token = false`) | **루트 분리는 끝났다. 착수 가능** |
 | NACL 설계 | 결정 3의 보완책. 서브넷 경계 규칙 | **루트 분리는 끝났다.** 운영 전환 전 |
-| `boa/k8s` 25개 이관 | §11-7. 남은 유일한 미완 단계 | gitops 부트스트랩 실행 전 |
+| `boa/k8s` 25개 이관 | §11-7 | gitops 부트스트랩 실행 전 |
+| **ArgoCD DNS 레코드 주체** | Terraform이 안 만든다(결정 11). 고아 CNAME 수정 / 삭제 후 A(alias) / 다른 호스트명 중 택1. 영역이 공용이라 팀 확인 필요 | `aws-ops` apply 후, ArgoCD 노출 전 |
+| 브랜치와 state의 관계 | `backend.tf` key가 브랜치와 무관하다. `dev`·`release`에서 각각 apply하면 같은 state를 번갈아 덮어쓴다. 현재는 **`dev` 한 곳에서만 apply** | dev/prod 분리 결정 시 |
 | **output 계약 맞추기** | 루트가 5개로 갈라져 gitops가 요구하는 output 9종이 세 루트에 흩어졌다. 집계 루트 / 스크립트 수정 / `aws.env` 직접 기입 중 택1. §13.1 | gitops 부트스트랩 실행 전 |
 | `rds_app_secret_arn` 신설 | 애플리케이션 전용 DB 시크릿. master와 같으면 부트스트랩이 거부한다 | 위와 동시 |
 | 매니페스트 배포 주체 | 초기 매니페스트를 Terraform이 배포할지 재검토 | 별도 검토 (이번 범위 밖) |
