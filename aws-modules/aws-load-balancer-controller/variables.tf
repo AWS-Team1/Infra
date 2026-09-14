@@ -24,3 +24,9 @@ variable "service_account_name" {
   type        = string
   default     = "aws-load-balancer-controller"
 }
+
+variable "chart_version" {
+  description = "helm chart default version"
+  type        = string
+  default     = "3.5.0"
+}

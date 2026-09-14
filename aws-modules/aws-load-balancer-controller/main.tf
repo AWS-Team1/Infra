@@ -52,7 +52,7 @@ resource "kubernetes_service_account_v1" "this" {
     name      = var.service_account_name
     namespace = var.namespace
   }
-  automount_service_account_token = false
+  automount_service_account_token = true
 }
 
 # 위 SA 를 위 IAM 역할에 연결. 이게 있어야 컨트롤러가 AWS API 를 호출한다.
@@ -71,7 +71,7 @@ resource "helm_release" "this" {
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = var.namespace
-
+  version    = var.chart_version
   set = [
     {
       name  = "clusterName"
