@@ -39,3 +39,8 @@ variable "private_subnet_cidrs" {
 variable "db_subnet_cidrs" {
   type = list(string)
 }
+
+# ElastiCache 전용. 라우팅 테이블을 붙이지 않아 외부로 나가지 않는다.
+variable "cache_subnet_cidrs" {
+  type = list(string)
+}
