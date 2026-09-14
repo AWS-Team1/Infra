@@ -45,3 +45,6 @@ jwt-keys/
 .agents/
 /tfdestroy
 /modules/kubectl
+
+# Subagent-Driven Development 작업 공간
+.superpowers/
