@@ -1,18 +1,14 @@
 # ===================================================
-# ACM / ROUTE53 참조
+# ACM 참조
 # ===================================================
-# ACM 과 DNS 는 Terraform 관리 대상이 아니다. 이미 있는 것을 읽어 쓴다.
+# 인증서는 Terraform 관리 대상이 아니다. 이미 발급된 것을 읽어 HTTPS 리스너에 붙인다.
+# 와일드카드는 한 단계만 덮는다 — *.example.com 은 a.example.com 은 덮지만
+# a.b.example.com 은 덮지 않는다.
 
 data "aws_acm_certificate" "this" {
   domain      = var.certificate_domain
   statuses    = ["ISSUED"]
   most_recent = true
-}
-
-# argocd A 레코드를 넣을 퍼블릭 호스팅 영역.
-data "aws_route53_zone" "this" {
-  name         = var.hosted_zone_name
-  private_zone = false
 }
 
 
@@ -215,19 +211,11 @@ resource "aws_lb_listener_rule" "argocd" {
 
 
 # ===================================================
-# DNS
+# DNS — 이 모듈은 관리하지 않는다
 # ===================================================
-
-# argocd.bespinglobal.site 를 ALB 로 보내는 별칭 레코드.
-# 별칭이라 ALB DNS 가 바뀌어도 따라간다.
-resource "aws_route53_record" "argocd" {
-  zone_id = data.aws_route53_zone.this.zone_id
-  name    = var.argocd_host
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.this.dns_name
-    zone_id                = aws_lb.this.zone_id
-    evaluate_target_health = false
-  }
-}
+# argocd_host 를 ALB 로 보내는 레코드는 이 모듈이 만들지 않는다.
+# 호스팅 영역 bespinglobal.site 는 다른 서비스(app · prod · origin)가 함께 쓰는
+# 공용 영역이라 Terraform 이 손대지 않는다.
+#
+# 붙이는 방법 — outputs 의 alb_dns_name · alb_zone_id 로 A(alias) 레코드를 만든다.
+# 리스너 규칙(위)이 Host 헤더로 라우팅하므로 그 이름이 argocd_host 와 같아야 한다.

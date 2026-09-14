@@ -22,8 +22,14 @@ output "ecr_repository_arns" {
 # ops ALB
 # ---------------------------------------------------------
 
+# DNS 레코드는 Terraform 이 만들지 않는다. argocd_host 를 이 ALB 로 보내는
+# A(alias) 레코드를 손으로 잡을 때 아래 둘을 대상 이름 · 대상 영역 ID 로 쓴다.
 output "ops_alb_dns_name" {
   value = module.ops_alb.alb_dns_name
+}
+
+output "ops_alb_zone_id" {
+  value = module.ops_alb.alb_zone_id
 }
 
 # gitops 의 aws.env 에 ALB_SECURITY_GROUP_ID 로 넣는다.
