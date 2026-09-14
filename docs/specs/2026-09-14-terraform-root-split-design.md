@@ -36,7 +36,7 @@ provider 분리(모든 루트가 `aws` 하나만 쓰게 하는 것)는 **이번 
 | 6 | AWS Load Balancer Controller는 **Terraform이 설치 (현행 유지)** | 분리 이득은 있으나 이번 범위 밖. §12 개선 과제 |
 | 7 | ALB 2개 — 서비스 ALB는 Ingress(컨트롤러 생성), ops ALB는 Terraform | 수명주기가 다르다. 7절 |
 | 8 | IAM은 `eks-iam` 1모듈, `aws-eks` 루트 안 | 클러스터 ARN 을 문자열로 조립해 순환을 없앴다. §6 |
-| 9 | ECR은 Infra 밖 (CI/CD 소관) | gitops 부트스트랩 수정이 따라온다. 9절 |
+| 9 | ECR은 `aws-ops` 루트가 소유한다 **(2026-09-14 변경)** | 당초 "Infra 밖(CI/CD 소관)"이었으나 뒤집었다. 9절 |
 | 10 | GCP는 이번 범위에서 제외 | 현재 `.tf` 0건, google provider 참조 0건 |
 
 ## 4. 디렉터리 구조
@@ -49,8 +49,9 @@ Infra/
 │   ├── eks/                    클러스터 · 노드그룹 · 애드온
 │   ├── rds/
 │   ├── elasticache/
+│   ├── ecr/                            프라이빗 리포지터리 + 수명주기 정책
 │   ├── aws-load-balancer-controller/   IAM · SA · helm_release (현행 그대로)
-│   └── ops-alb/                        ops ALB. ALB 컨트롤러와 무관
+│   └── ops-alb/                        ops ALB. ALB 컨트롤러와 무관 [미구현]
 ├── gcp-modules/                (GCP 착수 시)
 ├── aws-core/                   루트
 ├── aws-eks/
@@ -81,7 +82,7 @@ aws-eks/
 | `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4개(`eks` 모듈 3 — karpenter·ebs_csi·bank_of_anthos + `aws-load-balancer-controller` 모듈 1) · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_certificate_authority_data` `cluster_security_group_id` `node_group_name` |
 | `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `db_address` `db_port` `db_name` `master_user_secret_arn` `db_security_group_id` |
 | `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `cache_endpoint` `secret_arn` `user_group_id` `cache_security_group_id` |
-| `aws-ops` | ops ALB · 리스너 · 대상 그룹 · ops-alb-sg · Route53 레코드 **[나중: ECS]** | core | `argocd_target_group_arn` `alb_security_group_id` `alb_dns_name` |
+| `aws-ops` | **ECR 6개 + 수명주기 정책** · [미구현: ops ALB · 리스너 · 대상 그룹 · ops-alb-sg · Route53 · ECS] | **없음** (ECR만 있는 동안) | `ecr_registry` `ecr_repository_urls` `ecr_repository_names` `ecr_repository_arns` |
 
 ```
 aws-core ──┬──→ aws-eks
@@ -186,11 +187,45 @@ Ingress가 만든 ALB는 Terraform state에 없다. ALB의 ENI가 퍼블릭 서�
 
 **초기 배포는 ArgoCD가 아니다.** `aws-eks` apply가 끝난 뒤 코드 서버에서 kubectl로 매니페스트를 적용한다. ArgoCD는 그 이후 단계다.
 
-## 9. ECR 이동의 파급
+## 9. ECR
 
-`gitops/scripts/bootstrap-eks.sh:233`이 `terraform output -json`에서 `ecr_registry`를 읽고, 245–262행의 **필수 목록**에 들어 있어 비면 `die`로 중단한다. 287행에 환경 파일 경로가 있으나 그 앞의 필수 검사를 먼저 통과해야 도달한다.
+**2026-09-14 결정을 뒤집었다.** 당초 "ECR은 Infra 밖(CI/CD 소관)"이었으나, `aws-ops` 루트가
+소유하는 것으로 바꿨다. `gitops/scripts/bootstrap-eks.sh:233`이 `terraform output -json`에서
+`ecr_registry`를 읽고 245–262행의 **필수 목록**에 두고 있어서, Infra가 그 값을 내주는 쪽이
+부트스트랩이 그대로 통과한다.
 
-선택지 셋 — (a) 필수 목록에서 제외하고 환경 파일 경로만 사용, (b) CI/CD의 output을 Infra가 remote state로 읽어 재노출, (c) `aws.env`에 레지스트리 주소를 고정값으로 기재. **(c)가 가장 단순하다** — `<account>.dkr.ecr.ap-northeast-2.amazonaws.com`은 불변이다.
+`aws-ops`의 `ecr_registry` output은 **호스트만** 낸다. 스크립트 291행이 정규식으로 검사한다.
+
+    ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$
+
+리포지터리 경로가 붙으면 여기서 떨어진다.
+
+### 이름은 `boa-` 접두사를 붙인다
+
+    boa-frontend  boa-userservice  boa-contacts
+    boa-balancereader  boa-ledgerwriter  boa-transactionhistory
+
+접두사 없는 기존 6개(`frontend` `userservice` …)는 **손으로 만든 것이고 이미 이미지가 들어
+있다**(frontend 11개, userservice 8개, balancereader 9개 — 2026-09-14 확인). 이 스택은 그것을
+소유하지 않으며, 같은 이름으로 만들면 `RepositoryAlreadyExistsException`이 난다.
+
+**따라오는 작업 — gitops 저장소**
+
+`k8s/overlays/dev/aws/kustomization.yaml:27–42`의 `newName` 6줄이 접두사 없는 이름을 박고 있다.
+새 리포지터리를 쓰려면 그 6줄을 `boa-` 접두사로 바꾸고, **CI가 새 리포지터리로 이미지를 다시
+푸시**해야 한다. 레지스트리 호스트는 계정·리전 조합이라 바뀌지 않는다.
+
+기존 6개를 언제 정리할지는 미정이다 — 새 리포지터리로 전환이 끝나고 롤백이 필요 없어진 뒤다.
+
+### 설정
+
+| 항목 | 값 | 이유 |
+|---|---|---|
+| 태그 변경 | `IMMUTABLE` | 같은 태그 재푸시 차단. CI가 커밋 SHA로 태깅하는 전제 |
+| 푸시 시 스캔 | 켬 | ECR 기본 스캔은 무료다. 기존 6개는 꺼져 있었다 |
+| 암호화 | `AES256` | |
+| 수명주기 | untagged 1일 후 만료 → 최신 10개 유지 | `tagStatus = "any"` 규칙은 `rulePriority`가 가장 커야 해서 마지막에 둔다 |
+| `force_delete` | `false` | 이미지가 남아 있으면 destroy가 막힌다. 실수 방지 |
 
 ## 10. state 배치
 
