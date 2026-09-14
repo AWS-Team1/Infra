@@ -31,6 +31,14 @@ output "db_subnet_ids" {
   ]
 }
 
+# aws-cache 가 ElastiCache 서브넷 그룹을 만드는 데 쓴다.
+output "cache_subnet_ids" {
+  value = [
+    aws_subnet.cache_a.id,
+    aws_subnet.cache_c.id
+  ]
+}
+
 # rds / elasticache 가 SG 인바운드를 CIDR 로 여는 데 쓴다.
 output "private_subnet_cidrs" {
   value = [

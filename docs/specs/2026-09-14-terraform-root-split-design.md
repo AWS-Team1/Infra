@@ -101,7 +101,7 @@ aws-eks/
 
 | 루트 | 내용 | 읽는 것 | 노출하는 것 |
 |---|---|---|---|
-| `aws-core` | VPC(data 참조) · 서브넷 6 · IGW · NAT 2 · 라우팅 3 · S3 엔드포인트 연결 **[나중: NACL]** | — | `vpc_id` `vpc_cidr` `igw_id` `public_subnet_ids` `private_subnet_ids` `private_subnet_cidrs` `db_subnet_ids` |
+| `aws-core` | VPC(data 참조) · 서브넷 **8**(public 2 · private 2 · db 2 · cache 2) · IGW · NAT 2 · 라우팅 3 · S3 엔드포인트 연결 **[나중: NACL]** | — | `vpc_id` `vpc_cidr` `igw_id` `public_subnet_ids` `private_subnet_ids` `private_subnet_cidrs` `db_subnet_ids` `cache_subnet_ids` |
 | `aws-eks` | IAM 전체 · 클러스터 · 노드그룹 · 애드온 6 · Pod Identity 4개(`eks` 모듈 3 — karpenter·ebs_csi·bank_of_anthos + `aws-load-balancer-controller` 모듈 1) · access entry · **ALB 컨트롤러(helm) · k8s RBAC** | core | `cluster_name` `cluster_endpoint` `cluster_certificate_authority_data` `cluster_security_group_id` `node_group_name` |
 | `aws-rds` | PostgreSQL · db-sg · 파라미터그룹 · 모니터링 IAM | core | `db_address` `db_port` `db_name` `master_user_secret_arn` `db_security_group_id` |
 | `aws-cache` | Valkey Serverless · cache-sg · RBAC user/group · Secrets | core | `cache_endpoint` `secret_arn` `user_group_id` `cache_security_group_id` |
@@ -335,6 +335,7 @@ s3://boa-terraform-state-6416/
 | 13 | ops ALB에서 Route53 레코드 제거, `ops_alb_zone_id` output 추가 (§7) | 완료 |
 | 14 | 저장소 조직 이관에 따른 remote 주소 변경 | 로컬 5개 완료 · **코드 서버 미완** |
 | 15 | 5개 루트 `default_tags`의 `Repo`를 `AWS-TEAM1-DEV/Infra`로 | 완료 |
+| 16 | ElastiCache 전용 서브넷 분리 (§12.1) | 코드 완료 · **`aws-core` 재apply 필요** |
 
 **아직 apply한 적이 없어 state 마이그레이션이 필요 없었다.** 구조를 바꾸기에 가장 저렴한 시점이었다. apply 이후였다면 루트별 `terraform state mv`가 필요했다.
 
@@ -347,8 +348,7 @@ s3://boa-terraform-state-6416/
 | 항목 | 내용 | 결정 시한 |
 |---|---|---|
 | **ALB 컨트롤러 분리** | `helm_release`·`ServiceAccount`·k8s RBAC를 `aws-eks`에서 빼면 이 루트가 `aws` provider 하나가 되어 클러스터 상태와 무관하게 `plan`이 돈다. 빼는 방식은 코드 서버의 helm 명령(권장) 또는 렌더한 매니페스트. 같이 고칠 것 — 차트 버전 고정(현재 `version` 인자 없음), `serviceAccount.create=true`로 전환(현재 `automount_service_account_token = false`) | **루트 분리는 끝났다. 착수 가능** |
-| NACL 설계 | 결정 3의 보완책. 서브넷 경계 규칙. **아래 캐시 서브넷 분리가 선행되어야 실효가 있다** | **루트 분리는 끝났다.** 운영 전환 전 |
-| **ElastiCache 전용 서브넷** | 현재 `aws-cache/main.tf:30`이 EKS와 **프라이빗 서브넷을 공유**한다(`private_subnet_ids`). RDS만 전용 db 서브넷을 쓰고 있어 기준이 다르다. `aws-core`에 캐시 전용 서브넷을 정의하고 거기로 옮긴다 — 아래 §12.1 | `aws-cache` 재구축 시 |
+| NACL 설계 | 결정 3의 보완책. 서브넷 경계 규칙. 캐시 서브넷 분리(§12.1)가 선행 조건이었고 **해소됐다** | **루트 분리는 끝났다.** 운영 전환 전 |
 | `boa/k8s` 25개 이관 | §11-7 | gitops 부트스트랩 실행 전 |
 | **ArgoCD DNS 레코드 주체** | Terraform이 안 만든다(결정 11). 고아 CNAME 수정 / 삭제 후 A(alias) / 다른 호스트명 중 택1. 영역이 공용이라 팀 확인 필요 | `aws-ops` apply 후, ArgoCD 노출 전 |
 | 브랜치와 state의 관계 | `backend.tf` key가 브랜치와 무관하다. `dev`·`release`에서 각각 apply하면 같은 state를 번갈아 덮어쓴다. 현재는 **`dev` 한 곳에서만 apply** | dev/prod 분리 결정 시 |
@@ -363,31 +363,49 @@ s3://boa-terraform-state-6416/
 
 **절대 날짜는 팀 일정이 정해진 뒤 채운다.**
 
-### 12.1 ElastiCache 전용 서브넷 (2026-09-14 방향 결정, 구현 보류)
+### 12.1 ElastiCache 전용 서브넷 (2026-09-14 구현 완료)
 
-현재 배치다.
+**분리 전** 배치는 이랬다 — DB는 분리했는데 캐시만 프라이빗에 얹혀 있었다.
 
     192.168.8.0/24   boa-private-a   EKS 노드·파드 + ElastiCache   ← 공유
     192.168.9.0/24   boa-private-c   EKS 노드·파드 + ElastiCache   ← 공유
     192.168.16.0/24  boa-db-a        RDS 전용
     192.168.17.0/24  boa-db-c        RDS 전용
 
-**DB는 분리했는데 캐시만 얹혀 있다.** `aws-cache/main.tf:30`이 `private_subnet_ids`를 넘긴다.
+**분리 후**는 이렇다.
 
-문제는 둘이다.
+    192.168.8.0/24   boa-private-a   EKS 노드·파드
+    192.168.9.0/24   boa-private-c   EKS 노드·파드
+    192.168.16.0/24  boa-db-a        RDS 전용
+    192.168.17.0/24  boa-db-c        RDS 전용
+    192.168.24.0/24  boa-cache-a     ElastiCache 전용
+    192.168.25.0/24  boa-cache-c     ElastiCache 전용
+
+분리한 이유는 둘이다.
 
 1. **IP 고갈.** VPC CNI라 파드 하나가 프라이빗 서브넷 IP를 하나씩 쓴다. `/24`는 가용 251개이고 노드 ENI와 ElastiCache ENI가 더 붙는다. Karpenter가 노드를 늘리면 더 빨리 준다.
 2. **NACL이 무력해진다.** NACL은 서브넷 단위다. 캐시와 파드가 같은 서브넷이면 그 경계로 둘을 구분할 수 없다. §12의 NACL 과제가 이것 때문에 반쪽이 된다.
 
-보안 그룹은 영향이 없다. 인바운드를 프라이빗 CIDR로 여는 것은 **클라이언트가 있는 곳** 기준이라 캐시를 어디 두든 그대로다.
+보안 그룹은 영향이 없다. 인바운드를 프라이빗 CIDR로 여는 것은 **클라이언트가 있는 곳** 기준이라 캐시를 어디 두든 그대로다. 그래서 `aws-cache`는 `private_subnet_cidrs`(SG용)와 `cache_subnet_ids`(배치용)를 **따로** 받는다.
 
-**방향 — `aws-core`에 캐시 전용 서브넷을 정의하고 `aws-cache`가 그것을 쓴다.**
-
-남은 대역은 `192.168.24.0/24` · `192.168.25.0/24`가 비어 있다(현재 쓰는 것은 0·1·2·3·8·9·16·17). 캐시는 아웃바운드 인터넷이 필요 없으므로 db 서브넷처럼 라우팅 테이블을 붙이지 않고 메인 RT(local만)를 상속시킨다.
+캐시는 아웃바운드 인터넷이 필요 없으므로 db 서브넷처럼 **라우팅 테이블을 붙이지 않고** 메인 RT(local만)를 상속시킨다.
 
 검토했다가 택하지 않은 안 — **db 서브넷 재사용.** 한 줄로 끝나지만 `boa-db-*`라는 이름에 캐시가 들어가고, RDS와 캐시가 같은 NACL 경계를 공유하게 되어 1번 문제만 풀고 2번은 절반만 푼다.
 
-**시점 주의.** 서브넷 그룹은 생성 후 변경이 제한적이라, 이미 apply한 ElastiCache의 `subnet_ids`를 바꾸면 **교체(force new)**가 걸릴 가능성이 높다. 캐시 데이터도 사라진다. Phase 1은 `max_data_storage = 1` · `max_ecpu_per_second = 1000`의 검증용이라 교체 비용이 낮지만, 운영 전환 전에는 끝내야 한다.
+**시점.** `aws-cache` apply **전에** 반영했다. 서브넷 그룹은 생성 후 변경이 제한적이라, 이미 apply한 ElastiCache의 `subnet_ids`를 바꾸면 **교체(force new)**가 걸린다. 먼저 올렸다면 캐시를 한 번 버려야 했다.
+
+`aws-core`는 이미 apply된 상태(2026-09-14 17:30)이므로 **서브넷 2개 추가로 재apply가 필요하다.** 기존 리소스는 건드리지 않는다 — `Plan: 2 to add, 0 to change, 0 to destroy`가 나와야 한다.
+
+건드린 곳은 다섯이다.
+
+| 파일 | 내용 |
+|---|---|
+| `aws-modules/network/main.tf` | `aws_subnet.cache_a` · `cache_c` |
+| `aws-modules/network/variables.tf` | `var.cache_subnet_cidrs` |
+| `aws-modules/network/outputs.tf` | `cache_subnet_ids` |
+| `aws-core/main.tf` | CIDR `192.168.24.0/24` · `192.168.25.0/24` |
+| `aws-core/outputs.tf` | `cache_subnet_ids` 노출 |
+| `aws-cache/main.tf` | `private_subnet_ids` → `cache_subnet_ids` |
 
 ## 13. 확인이 필요한 기존 문제
 

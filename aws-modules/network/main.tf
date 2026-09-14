@@ -102,6 +102,32 @@ resource "aws_subnet" "db_c" {
   }
 }
 
+# 캐시 a — ElastiCache 전용. aws-cache 루트가 cache_subnet_ids 로 받는다.
+# 프라이빗과 분리하는 이유는 둘이다 —
+#   1) VPC CNI 라 파드가 프라이빗 IP 를 하나씩 먹어 /24 가 빨리 준다
+#   2) NACL 은 서브넷 단위라 같은 서브넷이면 파드와 캐시를 구분할 수 없다
+# db 서브넷과 마찬가지로 라우팅 테이블을 붙이지 않는다 — 외부로 나가지 않는다.
+resource "aws_subnet" "cache_a" {
+  vpc_id            = data.aws_vpc.main.id
+  cidr_block        = var.cache_subnet_cidrs[0]
+  availability_zone = var.availability_zones[0]
+
+  tags = {
+    Name = "${var.project_name}-cache-a"
+  }
+}
+
+# 캐시 c — ElastiCache 서브넷 그룹도 서로 다른 가용영역 2개를 요구한다.
+resource "aws_subnet" "cache_c" {
+  vpc_id            = data.aws_vpc.main.id
+  cidr_block        = var.cache_subnet_cidrs[1]
+  availability_zone = var.availability_zones[1]
+
+  tags = {
+    Name = "${var.project_name}-cache-c"
+  }
+}
+
 
 # ===================================================
 #       PUBLIC ROUTE TABLE (기존 IGW 로 나간다)

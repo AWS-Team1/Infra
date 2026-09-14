@@ -26,8 +26,10 @@ module "elasticache" {
   vpc_id               = data.terraform_remote_state.core.outputs.vpc_id
   private_subnet_cidrs = data.terraform_remote_state.core.outputs.private_subnet_cidrs
 
-  # EKS Private Subnet A/C 공유
-  subnet_ids = data.terraform_remote_state.core.outputs.private_subnet_ids
+  # ElastiCache 전용 서브넷. 프라이빗(EKS 파드)과 분리한다.
+  # private_subnet_cidrs 는 위에서 SG 인바운드용으로 따로 받는다 —
+  # 허용 대상은 클라이언트(파드)가 있는 곳이라 캐시 위치와 무관하다.
+  subnet_ids = data.terraform_remote_state.core.outputs.cache_subnet_ids
 
   # Phase 1 테스트용 낮은 사용량 상한
   max_data_storage    = 1

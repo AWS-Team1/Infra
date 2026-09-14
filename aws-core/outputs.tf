@@ -28,3 +28,8 @@ output "private_subnet_cidrs" {
 output "db_subnet_ids" {
   value = module.network.db_subnet_ids
 }
+
+# aws-cache 가 읽는다. 프라이빗과 분리해 파드와 캐시가 NACL 경계를 공유하지 않게 한다.
+output "cache_subnet_ids" {
+  value = module.network.cache_subnet_ids
+}
