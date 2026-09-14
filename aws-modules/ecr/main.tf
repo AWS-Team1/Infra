@@ -4,6 +4,7 @@
 # aws_ecr_repository 는 프라이빗 레지스트리 전용이다. 공개 여부 설정이 없다.
 # 퍼블릭이 필요하면 aws_ecrpublic_repository 를 us-east-1 에 따로 만들어야 한다.
 
+# 레지스트리 호스트(<계정ID>.dkr.ecr.<리전>.amazonaws.com) 조립에 쓴다.
 data "aws_caller_identity" "current" {}
 
 locals {
@@ -12,6 +13,8 @@ locals {
   registry_url = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com"
 }
 
+# 서비스마다 프라이빗 리포지터리 하나. CI 가 이미지를 푸시하고
+# gitops 의 kustomization.yaml newName 이 이 주소를 가리킨다.
 resource "aws_ecr_repository" "this" {
   for_each = toset(var.repository_names)
 
@@ -40,6 +43,7 @@ resource "aws_ecr_repository" "this" {
 # 규칙 순서에 제약이 있다. tagStatus = "any" 규칙은 rulePriority 가
 # 가장 커야 하므로 반드시 마지막에 둔다.
 
+# 리포지터리마다 수명주기 정책을 붙인다. 오래된 이미지가 무한히 쌓이는 것을 막는다.
 resource "aws_ecr_lifecycle_policy" "this" {
   for_each = aws_ecr_repository.this
 

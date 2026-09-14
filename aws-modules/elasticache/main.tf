@@ -3,6 +3,7 @@
 # - Phase 1에서는 Terraform이 랜덤 비밀번호 생성
 # =========================================================
 
+# Valkey RBAC 사용자의 비밀번호. state 에 평문으로 남는다.
 resource "random_password" "valkey" {
   length  = 32
   special = false
@@ -14,6 +15,7 @@ resource "random_password" "valkey" {
 # - WAS에서 사용할 Valkey Username / Password 보관
 # =========================================================
 
+# 애플리케이션이 읽을 자리. eks-iam 의 bank-of-anthos 정책이 /boa/* 를 허용한다.
 resource "aws_secretsmanager_secret" "valkey" {
   name = "/${var.project_name}/valkey/credentials"
 
@@ -40,6 +42,7 @@ resource "aws_secretsmanager_secret_version" "valkey" {
 # - Phase 1에서는 모든 Key / Command 허용
 # =========================================================
 
+# Valkey RBAC 사용자. 위 비밀번호로 인증하며 Phase 1 은 모든 키·명령을 허용한다.
 resource "aws_elasticache_user" "app" {
   user_id       = var.user_name
   user_name     = var.user_name
@@ -63,6 +66,7 @@ resource "aws_elasticache_user" "app" {
 #   Valkey Serverless Cache와 연결하기 위한 그룹
 # =========================================================
 
+# 위 사용자를 캐시에 붙이기 위한 그룹. 캐시는 사용자가 아니라 그룹을 참조한다.
 resource "aws_elasticache_user_group" "main" {
   engine        = "valkey"
   user_group_id = "${var.project_name}-valkey-users"
@@ -81,6 +85,9 @@ resource "aws_elasticache_user_group" "main" {
 # ElastiCache Serverless Valkey
 # =========================================================
 
+# Valkey Serverless 캐시. userservice 가 회원가입 시 signup:<username> 락에 쓴다.
+# SG 는 같은 모듈의 security.tf 것, 서브넷은 EKS 와 같은 프라이빗 서브넷이다.
+# snapshot_retention_limit = 0 — 잃어도 되는 데이터라는 전제다.
 resource "aws_elasticache_serverless_cache" "main" {
   name   = var.cache_name
   engine = "valkey"

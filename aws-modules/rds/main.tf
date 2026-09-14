@@ -1,4 +1,6 @@
 # DB Subnet Group
+# RDS 를 어느 서브넷에 놓을지. aws-core 의 db 서브넷 2개(다른 AZ)를 받는다.
+# Multi-AZ 는 서로 다른 AZ 의 서브넷 2개 이상을 요구한다.
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnet-group"
   subnet_ids = var.db_subnet_ids
@@ -10,6 +12,7 @@ resource "aws_db_subnet_group" "main" {
 
 
 # PostgreSQL Custom Parameter Group
+# PostgreSQL 파라미터. 1초 넘는 쿼리를 로그로 남긴다(느린 쿼리 추적).
 resource "aws_db_parameter_group" "main" {
   name   = "${var.project_name}-postgres16"
   family = "postgres16"
@@ -26,6 +29,9 @@ resource "aws_db_parameter_group" "main" {
 
 
 # PostgreSQL RDS
+# PostgreSQL 인스턴스. SG 는 같은 모듈의 security.tf 가 만든 것을 쓰고,
+# 마스터 비밀번호는 AWS 가 Secrets Manager 에 만들어 관리한다(manage_master_user_password).
+# 주의 — skip_final_snapshot = true 라 삭제 시 최종 스냅샷이 남지 않는다.
 resource "aws_db_instance" "main" {
   identifier = var.db_identifier
 
@@ -93,6 +99,8 @@ resource "aws_db_instance" "main" {
   ]
 }
 
+# 향상된 모니터링이 OS 지표를 쓰는 로그 그룹. 이름이 AWS 고정이라 접두사를 못 붙인다.
+# 계정·리전당 하나뿐이라 다른 스택이 이미 갖고 있으면 count = 0 으로 건너뛴다.
 resource "aws_cloudwatch_log_group" "rds_os_metrics" {
   count = var.create_os_metrics_log_group ? 1 : 0
 
