@@ -4,18 +4,18 @@
 - 대상 저장소: `AWS-TEAM1-DEV/Infra` (2026-09-14 조직 이관. 이전 `swoobuntu/Infra`)
 - 작업 브랜치: `dev` (이전 `Karfa-choi`. `dev` · `release` · `Karfa-choi` 모두 같은 지점)
 - 선행 커밋: `97a01b6` (boa- 접두사 전환, 기존 VPC 재사용)
-- **구현 상태: 루트 분리·태그·ECR·ops ALB·주석·DNS 제거까지 반영 완료.** 루트 5개 `validate` 통과.
-  `terraform apply`·`plan`은 아직 한 번도 실행하지 않았고 state 버킷은 비어 있다.
-  남은 것은 §11의 7번(`boa/k8s` 이관)과 14번(코드 서버 remote)이다.
+- **구현 상태 (2026-09-14): 코드는 전부 반영, apply는 `aws-core`·`aws-eks`까지.**
+  클러스터 `boa-eks`가 떠 있고 노드 2대가 `Ready`다. `aws-rds`·`aws-cache`·`aws-ops`는 미적용.
+  `aws-core`는 캐시 서브넷 2개 때문에 **재apply가 남아 있다.** 상세는 §11.1.
 
-**2026-09-14 계정 현황 확인.** EKS 클러스터 0개, RDS 0개, ElastiCache 0개, ALB 0개,
-`boa-` IAM 역할 0개, state 버킷 비어 있음. 대상 VPC에 IGW 없음(코드가 새로 만든다),
-기존 서브넷은 `192.168.0.0/24` · `192.168.1.0/24`뿐이라 신규 6개와 겹치지 않는다.
-**충돌 지점은 Route53 고아 CNAME 하나뿐이었고, 결정 11로 해소했다.**
-남아 있는 기존 자원은 접두사 없는 ECR 6개(이미지 포함)와 그 CNAME이다.
+**착수 전 계정 현황 (2026-09-14).** EKS·RDS·ElastiCache·ALB·`boa-` IAM 역할 모두 0개,
+state 버킷 비어 있음, 대상 VPC에 IGW 없음. 기존 서브넷은 `192.168.0.0/24` · `192.168.1.0/24`
+뿐이라 신규 대역과 겹치지 않았다. **충돌 지점은 Route53 고아 CNAME 하나뿐이었고 결정 11로
+해소했다.** 이 스택이 소유하지 않는 기존 자원은 접두사 없는 ECR 6개(이미지 포함)와 그 CNAME이다.
 
 이 문서는 **설계와 현재 코드를 함께** 기술한다. 이미 구현된 항목은 현재형으로,
 검토 끝에 폐기한 안은 "폐기"로 명시해 남긴다.
+**설계 확정 이후의 실행 기록은 §14에 날짜별로 분리해 둔다.**
 
 ## 1. 배경
 
@@ -333,21 +333,47 @@ s3://boa-terraform-state-6416/
 | 11 | `aws-modules/ops-alb` 신설, `aws-ops`가 호출 (§7) | 완료 |
 | 12 | 전 리소스 선언 위에 역할·연결 주석 부착 | 완료 |
 | 13 | ops ALB에서 Route53 레코드 제거, `ops_alb_zone_id` output 추가 (§7) | 완료 |
-| 14 | 저장소 조직 이관에 따른 remote 주소 변경 | 로컬 5개 완료 · **코드 서버 미완** |
+| 14 | 저장소 조직 이관에 따른 remote 주소 변경 | 로컬 5개 · 코드 서버 완료 |
 | 15 | 5개 루트 `default_tags`의 `Repo`를 `AWS-TEAM1-DEV/Infra`로 | 완료 |
 | 16 | ElastiCache 전용 서브넷 분리 (§12.1) | 코드 완료 · **`aws-core` 재apply 필요** |
+| 17 | 노드 인스턴스 타입 `t3.medium` → `t3.large` | 완료 |
+| 18 | Pod Identity 네임스페이스 `default` → `bank-of-anthos` (§13) | **적용 완료** |
+| 19 | ALB 컨트롤러 SA 토큰 마운트 활성화, 차트 `3.5.0` 고정 (§13.2) | **적용 완료** |
+| 20 | 코드 서버 작업 계정을 `karfa`로 분리 (§14) | 완료 |
 
-**아직 apply한 적이 없어 state 마이그레이션이 필요 없었다.** 구조를 바꾸기에 가장 저렴한 시점이었다. apply 이후였다면 루트별 `terraform state mv`가 필요했다.
+**구조를 바꿀 당시 apply한 적이 없어 state 마이그레이션이 필요 없었다.** 가장 저렴한 시점이었다. apply 이후였다면 루트별 `terraform state mv`가 필요했다.
 
-검증은 `terraform fmt -recursive -check` + 루트별 `init -backend=false` + `validate`까지다.
-**`plan`·`apply`는 이 작업 범위 밖이었고 실행하지 않았다** — 로컬에 AWS 자격증명이 없고,
-실행은 코드 서버에서 한다.
+### 11.1 실제 apply 현황 (2026-09-14 기준)
+
+| 루트 | state | AWS 반영 |
+|---|---|---|
+| `aws-core` | `aws/core/terraform.tfstate` (17:30) | 서브넷 6 · IGW · NAT 2 · 라우팅. **캐시 서브넷 2개는 미반영 — 재apply 필요** |
+| `aws-eks` | `aws/eks/terraform.tfstate` (17:49, 이후 재apply) | 클러스터 `boa-eks` · 노드 2대 `Ready` · 애드온 · Pod Identity 4 |
+| `aws-rds` | 없음 | **미적용** |
+| `aws-cache` | 없음 | **미적용** — `aws-core` 재apply가 선행되어야 한다 |
+| `aws-ops` | 없음 | **미적용** |
+
+**`aws-cache`는 `aws-core` 재apply 없이는 plan부터 실패한다.** `cache_subnet_ids` output이 state에 없기 때문이다.
+
+    Error: Unsupported attribute
+      This object does not have an attribute named "cache_subnet_ids".
+
+적용된 Pod Identity 연결 4개 (2026-09-14 확인).
+
+    kube-system     aws-load-balancer-controller
+    kube-system     ebs-csi-controller-sa
+    karpenter       karpenter
+    bank-of-anthos  bank-of-anthos        ← 18단계로 default 에서 교정
+
+마지막 것이 `boa/k8s/serviceaccount.yaml`의 `name: bank-of-anthos`, 각 Deployment의
+`serviceAccountName: bank-of-anthos`와 일치한다. **단, 매니페스트에 `namespace:` 필드가 없어
+배포 시 `-n bank-of-anthos`를 명시하지 않으면 `default`에 생기고 매칭이 다시 깨진다.**
 
 ## 12. 미정 사항
 
 | 항목 | 내용 | 결정 시한 |
 |---|---|---|
-| **ALB 컨트롤러 분리** | `helm_release`·`ServiceAccount`·k8s RBAC를 `aws-eks`에서 빼면 이 루트가 `aws` provider 하나가 되어 클러스터 상태와 무관하게 `plan`이 돈다. 빼는 방식은 코드 서버의 helm 명령(권장) 또는 렌더한 매니페스트. 같이 고칠 것 — 차트 버전 고정(현재 `version` 인자 없음), `serviceAccount.create=true`로 전환(현재 `automount_service_account_token = false`) | **루트 분리는 끝났다. 착수 가능** |
+| **ALB 컨트롤러 분리** | `helm_release`·`ServiceAccount`·k8s RBAC를 `aws-eks`에서 빼면 이 루트가 `aws` provider 하나가 되어 클러스터 상태와 무관하게 `plan`이 돈다. 빼는 방식은 코드 서버의 helm 명령(권장) 또는 렌더한 매니페스트. 차트 버전 고정과 토큰 마운트는 §14.4에서 이미 해소했다. 남은 것은 분리 자체와 `serviceAccount.create=true` 전환이다 | **루트 분리는 끝났다. 착수 가능** |
 | NACL 설계 | 결정 3의 보완책. 서브넷 경계 규칙. 캐시 서브넷 분리(§12.1)가 선행 조건이었고 **해소됐다** | **루트 분리는 끝났다.** 운영 전환 전 |
 | `boa/k8s` 25개 이관 | §11-7 | gitops 부트스트랩 실행 전 |
 | **ArgoCD DNS 레코드 주체** | Terraform이 안 만든다(결정 11). 고아 CNAME 수정 / 삭제 후 A(alias) / 다른 호스트명 중 택1. 영역이 공용이라 팀 확인 필요 | `aws-ops` apply 후, ArgoCD 노출 전 |
@@ -414,9 +440,9 @@ s3://boa-terraform-state-6416/
 | 문제 | 위치 | 비고 |
 |---|---|---|
 | 노드 역할이 Secrets Manager `/boa/*`에 직접 접근 | `aws-modules/eks-iam/main.tf:331` (`aws_iam_policy.node_secrets`) | 그 노드의 모든 파드가 IMDS로 접근 가능. Pod Identity를 쓰는 취지를 깨뜨린다. **단, Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인 필요** |
-| Pod Identity 네임스페이스가 `default` | `aws-modules/eks/iam.tf:33` | 라이브 앱 네임스페이스는 `bank-of-anthos`. 다르면 파드가 자격증명을 못 받는다 |
-| ALB 컨트롤러 SA의 `automount_service_account_token = false` | `aws-modules/aws-load-balancer-controller/main.tf:55` | 컨트롤러는 kube API 토큰이 필요하다. Helm 차트가 파드 레벨에서 켜주는지 확인 필요 |
-| ALB 컨트롤러 helm 차트 버전 미고정 | `aws-modules/aws-load-balancer-controller/main.tf:69` (`version` 인자 없음) | 최신 차트를 매번 끌어온다. apply 시점에 따라 결과가 달라진다 |
+| ~~Pod Identity 네임스페이스가 `default`~~ | `aws-modules/eks/iam.tf` | **해소 (§14.1-18).** `bank-of-anthos`로 교정. 단 매니페스트에 `namespace:` 필드가 없어 배포 시 `-n bank-of-anthos` 명시가 필요하다 |
+| ~~ALB 컨트롤러 SA의 `automount_service_account_token = false`~~ | `aws-modules/aws-load-balancer-controller/main.tf` | **실제로 터졌고 고쳤다 → §14.4** |
+| ~~ALB 컨트롤러 helm 차트 버전 미고정~~ | 같은 파일 | **해소.** `var.chart_version` 기본값 `3.5.0` |
 | EKS 퍼블릭 엔드포인트에 코드 서버 IP 하드코딩 | `aws-eks/main.tf:29` (`15.165.176.99/32`) | 인스턴스 재기동 시 변경된다. 변수화 필요 |
 | 루트 `outputs.tf`가 gitops 요구와 다름 | 각 루트 `outputs.tf` | 아래 §13.1 참조. `ecr_registry`는 `aws-ops` 신설로 해소됐고 **8종이 남았다** |
 
@@ -457,3 +483,133 @@ s3://boa-terraform-state-6416/
 맞춰지지만, 저장소에 커밋된 값과 다르다는 점은 알고 있어야 한다.
 
 **어느 선택지를 쓸지는 미정이다.** gitops 부트스트랩 실행 전에 정해야 한다.
+
+## 14. 2026-09-14 추가 반영 사항
+
+설계 확정 이후 **실제 apply를 돌리면서** 생긴 변경과 발견을 날짜 단위로 남긴다.
+본문(§1~§13)은 설계를, 이 절은 그 뒤에 붙은 실행 기록을 담는다.
+
+### 14.1 변경 목록
+
+| # | 내용 | 근거 | 상태 |
+|---|---|---|---|
+| 17 | 노드 인스턴스 타입 `t3.medium` → `t3.large` | 용량 | 적용 |
+| 18 | Pod Identity 네임스페이스 `default` → `bank-of-anthos` | §13 미해결 항목 해소 | 적용 |
+| 19 | ALB 컨트롤러 SA 토큰 마운트 활성화 + 차트 `3.5.0` 고정 | 아래 §14.4 | 적용 |
+| 20 | 코드 서버 작업 계정 `karfa` 분리 | 아래 §14.2 | 완료 |
+| 21 | `aws-core` 캐시 서브넷 2개 | §12.1 | **코드만. 재apply 미완** |
+
+`aws-cache`·`aws-rds`·`aws-ops`는 **아직 apply하지 않았다**(§11.1).
+
+### 14.2 코드 서버 작업 계정 분리
+
+기존에는 팀 전원이 `ec2-user` 하나로 로그인했다. `$HOME`이 공유되므로
+
+- `~/.kube/config`가 공유된다 — 한 사람이 `update-kubeconfig`를 돌리면 **모두의 현재 컨텍스트가 바뀐다.** 실제로 이 세션에서 발생했다.
+- `~/.gitconfig`가 공유된다 — `git config --global`을 쓰면 남의 커밋에 내 이름이 찍힌다.
+- 자격증명 캐시가 공유된다.
+
+**`--global`은 머신 전체가 아니라 사용자 단위다**(`~/.gitconfig`). 문제는 `--global` 자체가
+아니라 계정 공유였다.
+
+**조치 — 리눅스 사용자 `karfa`를 만들고 작업 공간을 홈으로 옮겼다.**
+
+    /home/karfa/work-dir/{Infra,gitops}
+
+이제 kubeconfig · gitconfig · 자격증명 캐시가 자동으로 분리된다. `--kubeconfig` 플래그도
+`KUBECONFIG` export도 별칭도 필요 없다.
+
+**Terraform 쪽은 손댈 것이 없었다.** EKS access entry는 **IAM 역할** 기준이고 자격증명은
+인스턴스 메타데이터에서 오므로, 같은 인스턴스의 어떤 리눅스 사용자든 `CodeServerEc2Role`을
+그대로 쓴다. access entry 추가가 불필요하다.
+
+작업 공간 이동 시 걸린 것 둘.
+
+1. **git이 남의 소유 저장소를 거부한다**(`dubious ownership`, CVE-2022-24765 완화). `safe.directory`
+   예외보다 `chown`으로 소유자를 정리하는 쪽이 맞다 — 예외를 걸면 새 객체와 기존 객체의
+   소유자가 섞인다.
+2. **20시간 멈춰 있던 git 프로세스 6개**가 `work-dir`를 붙잡고 있었다. 전부 `STAT=T`(정지)였고
+   옛 `swoobuntu` 주소로 가고 있었다 — VS Code Remote의 `GIT_ASKPASS`가 로컬 창으로 튀어
+   응답을 못 받은 것이다. 터미널에서 처리하려면 먼저:
+
+    unset GIT_ASKPASS SSH_ASKPASS VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_IPC_HANDLE
+    export GIT_TERMINAL_PROMPT=1
+
+자격증명 헬퍼는 `cache --timeout=43200`을 쓴다. **`store`는 쓰지 않는다** — 평문 파일이고
+`ec2-user`가 `wheel` 그룹이라 `sudo`로 읽을 수 있다.
+
+### 14.3 같은 계정의 병렬 스택
+
+이 계정에는 **다른 팀원의 Terraform 스택이 동시에 존재한다. 의도된 구성이다.**
+
+| | 이 스택 | 팀원 스택 |
+|---|---|---|
+| 저장소 | `AWS-TEAM1-DEV/Infra` | `AWS-Team1/infra` |
+| 코드 서버 경로 | `/home/karfa/work-dir/Infra` | `/home/ec2-user/infra` |
+| 브랜치 | `dev` | `split-module-adh` |
+| state 버킷 | `boa-terraform-state-6416` | `final-project-s3-team1` |
+| VPC | `Karfa-vpc` `192.168.0.0/16` | `project-vpc` `10.0.0.0/16` |
+| 클러스터 | `boa-eks` | `project-eks` |
+| 접두사 | `boa-` | 없음 |
+
+VPC·state·이름이 모두 갈라져 있어 간섭하지 않는다. **다만 디렉터리를 헷갈리면 남의 state를
+건드린다.** 팀원 쪽도 루트를 5개(network·eks·rds·valkey·addon)로 쪼갠 구조다.
+
+접두사 없는 기존 ECR 6개와 `argocd.bespinglobal.site` CNAME은 이 스택의 소유가 아니다(§7·§9).
+
+
+### 14.4 ALB 컨트롤러 CrashLoopBackOff — 발생과 해소
+
+`aws-eks` 첫 apply에서 `helm_release`가 5분 타임아웃으로 실패했다.
+
+    Warning: Helm release created with warnings
+      Helm release "aws-load-balancer-controller" was created but has a failed status.
+    Error: Helm release error
+      context deadline exceeded
+
+**helm 자체 문제가 아니라 파드가 기동하지 못한 것이다.** 파드 로그가 원인을 그대로 말해준다.
+
+    {"level":"error","logger":"setup","msg":"unable to build REST config",
+     "error":"open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory"}
+
+`kubernetes_service_account_v1.this`의 `automount_service_account_token = false` 때문이다.
+§13에 "차트가 파드 레벨에서 켜주는지 확인 필요"로 적어둔 항목이 **실제로 터졌고, 차트는
+켜주지 않는다**는 것이 확인됐다.
+
+**인증이 두 축이라는 점이 핵심이다.**
+
+| 대상 | 수단 | 상태 |
+|---|---|---|
+| AWS API (ELB 생성 등) | EKS Pod Identity → IAM 역할 | 정상이었다 |
+| kube API (Ingress watch) | ServiceAccount 토큰 | **막혀 있었다** |
+
+Pod Identity가 멀쩡해도 kube API 쪽이 막히면 컨트롤러는 기동 자체를 못 한다.
+
+**조치** — `automount_service_account_token = true`. 차트 버전도 `var.chart_version` 기본값
+`3.5.0`으로 고정했다(설치되어 동작을 확인한 버전). 고정하지 않으면 apply 시점마다 다른
+차트를 받아 이 문제가 재현되지도, 다른 문제가 걸러지지도 않는다.
+
+**`automount = false`가 맞는 대상은 kube API를 쓰지 않는 워크로드다.** 앱 파드 대부분이
+그렇고 CIS 벤치마크의 권고도 그 맥락이다. 컨트롤러류에는 해당하지 않는다 — 끄면 보안이
+올라가는 게 아니라 그냥 동작하지 않는다.
+
+실제로 열리는 권한은 확인해 두었다. **`secrets` 접근이 없고 와일드카드도 없다.**
+
+    ingresses · services            get list patch update watch
+    targetgroupbindings             create delete get list patch update watch
+    endpoints namespaces nodes pods get list watch          ← 읽기만
+    configmaps                      create delete get update ← 리더 선출용
+
+또한 `v1.36`이라 **BoundServiceAccountToken**이 기본이다 — 토큰이 1시간 수명에 audience와
+파드에 묶여 있어, 빼돌려도 오래 쓰지 못한다.
+
+**재적용 시 주의.** helm 릴리스가 `failed` 상태로 남으면 그 위 upgrade가 막힐 수 있다.
+
+    helm uninstall aws-load-balancer-controller -n kube-system
+    terraform -chdir=aws-eks apply
+
+**증상 확인 절차** (다시 생기면 이 순서로 본다)
+
+    kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+    kubectl logs -n kube-system <pod> --tail=30
+    helm list -n kube-system
