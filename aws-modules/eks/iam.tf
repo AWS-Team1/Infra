@@ -30,7 +30,7 @@ resource "aws_eks_pod_identity_association" "ebs_csi" {
 resource "aws_eks_pod_identity_association" "bank_of_anthos" {
   cluster_name = aws_eks_cluster.main.name
 
-  namespace       = "default"
+  namespace       = "bank-of-anthos"
   service_account = "bank-of-anthos"
 
   role_arn = var.bank_of_anthos_role_arn
