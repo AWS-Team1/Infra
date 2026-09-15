@@ -85,3 +85,8 @@ variable "ebs_csi_role_arn" {
 variable "bank_of_anthos_role_arn" {
   type = string
 }
+
+variable "console_user_group_name" {
+  description = "IAM group whose users can view EKS resources"
+  type        = string
+}

@@ -11,6 +11,45 @@ resource "aws_eks_access_entry" "code_server" {
   type = "STANDARD"
 }
 
+# IAM 그룹의 구성원 조회
+data "aws_iam_group" "console_users" {
+  group_name = var.console_user_group_name
+}
+
+# 사용자 ARN을 for_each용 Map으로 변환
+locals {
+  console_user_arns = {
+    for user in data.aws_iam_group.console_users.users :
+    user.arn => user.arn
+  }
+}
+
+# 그룹 구성원마다 EKS Access Entry 생성
+resource "aws_eks_access_entry" "console_users" {
+  for_each = local.console_user_arns
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  type          = "STANDARD"
+}
+
+# 그룹 구성원마다 EKS 조회 정책 연결
+resource "aws_eks_access_policy_association" "console_users_view" {
+  for_each = local.console_user_arns
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminViewPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [
+    aws_eks_access_entry.console_users
+  ]
+}
+
 
 # ===================================================
 # EKS ACCESS POLICY - CLUSTER ADMIN

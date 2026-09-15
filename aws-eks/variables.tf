@@ -3,3 +3,9 @@ variable "code_server_role_arn" {
   type        = string
   default     = "arn:aws:iam::769413326616:role/CodeServerEc2Role"
 }
+
+variable "console_user_group_name" {
+  description = "IAM group whose users can view EKS resources"
+  type        = string
+  default     = "admin-group"
+}
