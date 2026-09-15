@@ -17,6 +17,7 @@ Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreS
 ├── aws-eks/                    루트 — eks-iam · eks · aws-load-balancer-controller
 ├── aws-rds/                    루트 — rds
 ├── aws-cache/                  루트 — elasticache
+├── aws-cd-bootstrap/           루트 — Argo CD IAM·Secret·DNS 사전조건
 ├── boa/k8s/                    쿠버네티스 매니페스트
 └── docs/specs/                 설계 문서
 ```
@@ -77,6 +78,7 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 | `aws-rds` | `aws/rds/terraform.tfstate` | aws | core |
 | `aws-cache` | `aws/cache/terraform.tfstate` | aws | core |
 | `aws-ops` | `aws/ops/terraform.tfstate` | aws | core |
+| `aws-cd-bootstrap` | `aws/cd-bootstrap/terraform.tfstate` | aws | eks · rds · ops |
 
 `aws-ops` 는 ECR 과 ops ALB 를 갖는다. ALB 가 VPC·퍼블릭 서브넷을 필요로 하므로 core 를 읽는다.
 
@@ -91,8 +93,12 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 
 ### apply
 
-`aws-core` 를 먼저 적용한다. 나머지 셋은 그 뒤 순서 무관하며 동시 작업이 가능하다.
+`aws-core` 를 먼저 적용한다. `aws-eks` · `aws-rds` · `aws-cache` · `aws-ops`는
+그 뒤 적용하고, 마지막으로 `aws-cd-bootstrap`을 적용한다.
 `aws-eks` 는 `terraform.tfvars` 의 `code_server_role_arn` 이 필요하다 (저장소에 없음).
+
+`aws-cd-bootstrap`의 `HARD-CODED` 주석은 다른 계정·리전·도메인에 재사용할 때
+반드시 확인한다. 상세 순서는 GitOps 저장소의 `docs/ARGOCD_EKS_RUNBOOK.md`를 따른다.
 
 ### 삭제 순서
 

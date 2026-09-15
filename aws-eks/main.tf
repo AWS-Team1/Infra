@@ -48,7 +48,8 @@ module "eks" {
 
   control_plane_log_retention_days = 30
 
-  code_server_role_arn = var.code_server_role_arn
+  code_server_role_arn    = var.code_server_role_arn
+  console_user_group_name = var.console_user_group_name
 
   cluster_role_arn        = module.eks_iam.cluster_role_arn
   node_role_arn           = module.eks_iam.node_role_arn
