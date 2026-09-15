@@ -35,4 +35,8 @@ module "rds" {
 
   # RDSOSMetrics 는 계정·리전 공용 고정 이름. 기존 스택이 이미 보유 중이라 생성하지 않는다.
   create_os_metrics_log_group = false
+
+  # AWS DMS 의 CDC 전제 조건. 정적 파라미터라 apply 후 인스턴스 재부팅이 필요하다.
+  # 재부팅 전까지 파라미터 상태는 pending-reboot 로 남고 DMS 는 슬롯을 못 만든다.
+  enable_logical_replication = true
 }

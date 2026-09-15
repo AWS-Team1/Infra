@@ -13,6 +13,17 @@ resource "aws_db_subnet_group" "main" {
 
 # PostgreSQL Custom Parameter Group
 # PostgreSQL 파라미터. 1초 넘는 쿼리를 로그로 남긴다(느린 쿼리 추적).
+#
+# rds.logical_replication — AWS DMS 의 CDC(변경 데이터 캡처)가 논리 복제 슬롯을
+# 만들려면 반드시 1 이어야 한다. 이 값을 켜면 RDS 가 wal_level·max_wal_senders·
+# max_replication_slots 를 함께 맞춰준다.
+#
+# 주의 두 가지
+#  1. 정적 파라미터다. apply 만으로는 반영되지 않고 인스턴스 재부팅이 필요하다.
+#     Multi-AZ 이므로 재부팅이 AZ 페일오버를 동반할 수 있다.
+#  2. 켠 뒤에는 WAL 생성량이 늘어난다. 복제 슬롯을 쓰지 않게 되면
+#     반드시 pg_drop_replication_slot() 으로 지운다. 안 지우면 소비되지 않은
+#     WAL 이 계속 쌓여 인스턴스 스토리지를 채운다.
 resource "aws_db_parameter_group" "main" {
   name   = "${var.project_name}-postgres16"
   family = "postgres16"
@@ -20,6 +31,12 @@ resource "aws_db_parameter_group" "main" {
   parameter {
     name  = "log_min_duration_statement"
     value = "1000"
+  }
+
+  parameter {
+    name         = "rds.logical_replication"
+    value        = var.enable_logical_replication ? "1" : "0"
+    apply_method = "pending-reboot"
   }
 
   tags = {
