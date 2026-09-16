@@ -17,8 +17,8 @@ resource "random_password" "valkey" {
 
 # 애플리케이션이 읽을 자리. eks-iam 의 bank-of-anthos 정책이 /boa/* 를 허용한다.
 resource "aws_secretsmanager_secret" "valkey" {
-  name = "/${var.project_name}/valkey/credentials"
-
+  name                    = "/${var.project_name}/valkey/credentials"
+  recovery_window_in_days = 0
   tags = {
     Name = "${var.project_name}-valkey-credentials"
   }

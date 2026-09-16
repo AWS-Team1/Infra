@@ -49,10 +49,10 @@ resource "aws_secretsmanager_secret" "app_database" {
   # HARD-CODED: 애플리케이션 SecretProviderClass와 같은 이름이어야 한다.
   name                    = "/boa/database/app"
   description             = "Bank of Anthos least-privilege application database credential"
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
   }
 }
 
