@@ -56,6 +56,26 @@ resource "aws_secretsmanager_secret" "app_database" {
   }
 }
 
+resource "aws_secretsmanager_secret" "accounts_database" {
+  name                    = "/boa/database/accounts"
+  description             = "Bank of Anthos accounts service least-privilege database credential"
+  recovery_window_in_days = 7
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_secretsmanager_secret" "ledger_database" {
+  name                    = "/boa/database/ledger"
+  description             = "Bank of Anthos ledger service least-privilege database credential"
+  recovery_window_in_days = 7
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "aws_iam_role" "db_bootstrap" {
   # HARD-CODED: GitOps 문서와 운영 명명 규칙에 맞춰 변경할 수 있다.
   name        = "boa-db-bootstrap-sm"
@@ -91,7 +111,9 @@ resource "aws_iam_role_policy" "db_bootstrap_secrets" {
       ]
       Resource = [
         data.terraform_remote_state.rds.outputs.master_user_secret_arn,
-        aws_secretsmanager_secret.app_database.arn
+        aws_secretsmanager_secret.app_database.arn,
+        aws_secretsmanager_secret.accounts_database.arn,
+        aws_secretsmanager_secret.ledger_database.arn
       ]
     }]
   })
