@@ -62,12 +62,12 @@ module "dms" {
   # PostgreSQL 논리 복제는 DB 단위다. 두 DB 는 각각 슬롯·스트림을 갖는다.
   databases = {
     accounts = {
-      source_db = "accounts"
-      target_db = "accounts"
+      source_db = "accountsdb"
+      target_db = "accountsdb"
     }
     ledger = {
-      source_db = "ledger"
-      target_db = "ledger"
+      source_db = "ledgerdb"
+      target_db = "ledgerdb"
     }
   }
 
