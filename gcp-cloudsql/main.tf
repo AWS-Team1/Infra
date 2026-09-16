@@ -33,7 +33,7 @@ module "cloudsql" {
   psa_connection = data.terraform_remote_state.gcp_core.outputs.psa_connection
 
   # AWS 쪽 db-bootstrap Job 이 만드는 이름과 같아야 DMS 매핑이 단순해진다.
-  app_database_names = ["accounts", "ledger"]
+  app_database_names = ["accountsdb", "ledgerdb"]
 
   dms_username = "dms_writer"
   dms_password = var.dms_password
