@@ -10,9 +10,9 @@ variable "cluster_name" {
   type        = string
 }
 
-# 기존 VPC 를 재사용한다. 이 모듈은 VPC 와 IGW 를 생성하지 않는다.
-variable "vpc_id" {
-  description = "재사용할 기존 VPC ID"
+# 새로 생성할 VPC 의 IPv4 CIDR 이다.
+variable "vpc_cidr" {
+  description = "boa-vpc IPv4 CIDR"
   type        = string
 }
 
