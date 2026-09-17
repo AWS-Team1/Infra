@@ -5,7 +5,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project   = "boa"
-      Component = "cd-bootstrap"
+      Component = "db-bootstrap"
       ManagedBy = "terraform"
       Repo      = "AWS-TEAM1-DEV/Infra"
     }

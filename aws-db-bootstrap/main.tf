@@ -1,7 +1,14 @@
-data "aws_caller_identity" "current" {}
-data "aws_partition" "current" {}
+# aws-rds ── RDS master Secret ARN ──┐
+#                                     ├─ aws-db-bootstrap
+# aws-eks ── EKS cluster name ───────┘
+#
+# 이 root는 RDS를 만들지 않는다. EKS의 DB 초기화 Job만 RDS master 자격 증명과
+# 애플리케이션 DB Secret을 읽도록 연결해, 일반 애플리케이션 권한과 수명주기를 분리한다.
+# 적용 순서: aws-core → aws-rds와 aws-eks → aws-db-bootstrap → GitOps db-bootstrap Job
 
-# 기존 독립 root의 output을 계약으로 사용한다. 적용 순서는 README/runbook을 따른다.
+# EKS state에서 cluster_name을 가져와 아래 Pod Identity Association의 대상을 정한다.
+# Association은 실제 클러스터에 생성되는 AWS 리소스이므로 EKS가 먼저 존재해야 한다.
+# 이름을 하드코딩해도 이 의존성은 사라지지 않으며, ServiceAccount 자체는 GitOps가 만든다.
 data "terraform_remote_state" "eks" {
   backend = "s3"
 
@@ -13,6 +20,10 @@ data "terraform_remote_state" "eks" {
   }
 }
 
+
+# RDS state에서 AWS가 관리하는 master 사용자 Secret ARN을 가져온다.
+# 이 Secret은 일반 앱이 아니라 bootstrap 전용 역할만 읽으며, Job은 그 권한으로
+# 데이터베이스·역할·스키마와 서비스별 최소 권한을 최초 설정한다.
 data "terraform_remote_state" "rds" {
   backend = "s3"
 
@@ -24,27 +35,10 @@ data "terraform_remote_state" "rds" {
   }
 }
 
-data "terraform_remote_state" "ops" {
-  backend = "s3"
 
-  config = {
-    # HARD-CODED: 다른 환경의 backend 위치에 맞게 변경한다.
-    bucket = "boa-terraform-state-6416"
-    key    = "aws/ops/terraform.tfstate"
-    region = "ap-northeast-2"
-  }
-}
-
-check "account_guard" {
-  assert {
-    # HARD-CODED: 반드시 실제 배포 대상 AWS Account ID로 변경한다.
-    condition     = data.aws_caller_identity.current.account_id == "769413326616"
-    error_message = "Wrong AWS account. Expected 769413326616."
-  }
-}
-
-# 값은 Terraform에 넣지 않는다. GitOps prepare-database-secret.sh가 최초 한 번
-# stdin으로 값을 주입하므로 비밀번호가 코드/plan/명령 인자에 남지 않는다.
+# 아래 세 리소스는 Secret 컨테이너만 만든다. 실제 username/password 값은 별도
+# GitOps 준비 스크립트가 stdin으로 주입해 코드·plan·명령 인자에 남기지 않는다.
+# /boa/database/app은 기존 단일 bank_app 계정 구조와의 호환을 위해 유지한다.
 resource "aws_secretsmanager_secret" "app_database" {
   # HARD-CODED: 애플리케이션 SecretProviderClass와 같은 이름이어야 한다.
   name                    = "/boa/database/app"
@@ -56,6 +50,7 @@ resource "aws_secretsmanager_secret" "app_database" {
   }
 }
 
+# accounts 서비스가 accountsdb에 최소 권한으로 접속할 자격 증명 컨테이너다.
 resource "aws_secretsmanager_secret" "accounts_database" {
   name                    = "/boa/database/accounts"
   description             = "Bank of Anthos accounts service least-privilege database credential"
@@ -66,6 +61,7 @@ resource "aws_secretsmanager_secret" "accounts_database" {
   }
 }
 
+# ledger 서비스가 ledgerdb에 최소 권한으로 접속할 자격 증명 컨테이너다.
 resource "aws_secretsmanager_secret" "ledger_database" {
   name                    = "/boa/database/ledger"
   description             = "Bank of Anthos ledger service least-privilege database credential"
@@ -76,6 +72,8 @@ resource "aws_secretsmanager_secret" "ledger_database" {
   }
 }
 
+# DB bootstrap Pod만 맡는 EKS Pod Identity용 역할이다. 신뢰 주체를
+# pods.eks.amazonaws.com으로 제한해 RDS master 권한이 일반 앱 Pod에 노출되지 않게 한다.
 resource "aws_iam_role" "db_bootstrap" {
   # HARD-CODED: GitOps 문서와 운영 명명 규칙에 맞춰 변경할 수 있다.
   name        = "boa-db-bootstrap-sm"
@@ -96,6 +94,8 @@ resource "aws_iam_role" "db_bootstrap" {
   })
 }
 
+# bootstrap 역할이 읽을 Secret을 master와 위 세 DB Secret의 정확한 ARN으로 제한한다.
+# rds!db-* 와일드카드를 쓰지 않아 다른 RDS 인스턴스의 master Secret은 읽을 수 없다.
 resource "aws_iam_role_policy" "db_bootstrap_secrets" {
   name = "BoaDatabaseBootstrapSecrets"
   role = aws_iam_role.db_bootstrap.name
@@ -119,6 +119,9 @@ resource "aws_iam_role_policy" "db_bootstrap_secrets" {
   })
 }
 
+# EKS cluster → bank-of-anthos namespace → bank-of-anthos-db-bootstrap ServiceAccount
+# → boa-db-bootstrap-sm IAM role을 연결한다. 실제 EKS 클러스터에 Association을 만들기
+# 때문에 이 root가 aws-eks state의 cluster_name을 참조한다.
 resource "aws_eks_pod_identity_association" "db_bootstrap" {
   cluster_name = data.terraform_remote_state.eks.outputs.cluster_name
 
@@ -128,32 +131,3 @@ resource "aws_eks_pod_identity_association" "db_bootstrap" {
   role_arn        = aws_iam_role.db_bootstrap.arn
 }
 
-data "aws_route53_zone" "private" {
-  # HARD-CODED: 애플리케이션 DB_HOST와 같은 Private Hosted Zone이다.
-  name         = "boa.internal."
-  private_zone = true
-}
-
-resource "aws_route53_record" "database" {
-  zone_id = data.aws_route53_zone.private.zone_id
-  # HARD-CODED: GitOps의 db.boa.internal 참조와 같아야 한다.
-  name    = "db.boa.internal"
-  type    = "CNAME"
-  ttl     = 60
-  records = [data.terraform_remote_state.rds.outputs.db_address]
-}
-
-data "aws_route53_zone" "public" {
-  # HARD-CODED: ACM 인증서와 ops ALB Host 조건에 맞는 Public Hosted Zone이다.
-  name         = "bespinglobal.site."
-  private_zone = false
-}
-
-resource "aws_route53_record" "argocd" {
-  zone_id = data.aws_route53_zone.public.zone_id
-  # HARD-CODED: aws-ops의 argocd_host와 반드시 같아야 한다.
-  name    = "argocd.bespinglobal.site"
-  type    = "CNAME"
-  ttl     = 60
-  records = [data.terraform_remote_state.ops.outputs.ops_alb_dns_name]
-}

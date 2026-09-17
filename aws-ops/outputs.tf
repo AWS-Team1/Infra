@@ -22,8 +22,7 @@ output "ecr_repository_arns" {
 # ops ALB
 # ---------------------------------------------------------
 
-# DNS 레코드는 Terraform 이 만들지 않는다. argocd_host 를 이 ALB 로 보내는
-# A(alias) 레코드를 손으로 잡을 때 아래 둘을 대상 이름 · 대상 영역 ID 로 쓴다.
+# argocd_host는 HTTPS 리스너 Host 조건과 Route53 A(alias) 이름에 함께 사용한다.
 output "ops_alb_dns_name" {
   value = module.ops_alb.alb_dns_name
 }
@@ -32,23 +31,20 @@ output "ops_alb_zone_id" {
   value = module.ops_alb.alb_zone_id
 }
 
-# gitops 의 aws.env 에 ALB_SECURITY_GROUP_ID 로 넣는다.
-# TargetGroupBinding 의 spec.networking.ingress 가 이 값을 참조해야
-# 컨트롤러가 파드 SG 를 열어준다.
+
+# 관측성 대상 그룹을 붙일 때 쓸 리스너 ARN.
+output "ops_alb_https_listener_arn" {
+  value = module.ops_alb.https_listener_arn
+}
+
 output "ops_alb_security_group_id" {
   value = module.ops_alb.alb_security_group_id
 }
 
-# gitops 의 aws.env 의 ARGOCD_TARGET_GROUP_ARN 에 넣는다.
 output "argocd_target_group_arn" {
   value = module.ops_alb.argocd_target_group_arn
 }
 
 output "argocd_url" {
-  value = module.ops_alb.argocd_url
-}
-
-# 관측성 대상 그룹을 붙일 때 쓸 리스너 ARN.
-output "ops_alb_https_listener_arn" {
-  value = module.ops_alb.https_listener_arn
+  value = "https://${aws_route53_record.argocd.fqdn}"
 }
