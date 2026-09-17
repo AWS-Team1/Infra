@@ -92,7 +92,7 @@ resource "aws_subnet" "db_a" {
   availability_zone = var.availability_zones[0]
 
   tags = {
-    Name = "${var.project_name}-db-a"
+    Name = "${var.project_name}-dms-a"
   }
 }
 
@@ -103,7 +103,7 @@ resource "aws_subnet" "db_c" {
   availability_zone = var.availability_zones[1]
 
   tags = {
-    Name = "${var.project_name}-db-c"
+    Name = "${var.project_name}-dms-c"
   }
 }
 
