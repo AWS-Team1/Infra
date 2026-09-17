@@ -36,8 +36,8 @@ data "terraform_remote_state" "rds" {
 }
 
 
-# 아래 세 리소스는 Secret 컨테이너만 만든다. 실제 username/password 값은 별도
-# GitOps 준비 스크립트가 stdin으로 주입해 코드·plan·명령 인자에 남기지 않는다.
+# 아래 세 리소스는 Secret 컨테이너를 만들고 로컬 캐시의 비밀번호를 write-only로 저장한다.
+# 비밀번호 평문은 plan/state에 남지 않으며 파일 내용이 바뀌면 새 Version을 만든다.
 # /boa/database/app은 기존 단일 bank_app 계정 구조와의 호환을 위해 유지한다.
 resource "aws_secretsmanager_secret" "app_database" {
   # HARD-CODED: 애플리케이션 SecretProviderClass와 같은 이름이어야 한다.
@@ -70,6 +70,24 @@ resource "aws_secretsmanager_secret" "ledger_database" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+resource "aws_secretsmanager_secret_version" "app_database" {
+  secret_id                = aws_secretsmanager_secret.app_database.id
+  secret_string_wo         = jsonencode({ username = "bank_app", password = trimspace(file(pathexpand(var.app_database_password_file))) })
+  secret_string_wo_version = parseint(substr(filesha256(pathexpand(var.app_database_password_file)), 0, 8), 16)
+}
+
+resource "aws_secretsmanager_secret_version" "accounts_database" {
+  secret_id                = aws_secretsmanager_secret.accounts_database.id
+  secret_string_wo         = jsonencode({ username = "accounts_app", password = trimspace(file(pathexpand(var.accounts_database_password_file))) })
+  secret_string_wo_version = parseint(substr(filesha256(pathexpand(var.accounts_database_password_file)), 0, 8), 16)
+}
+
+resource "aws_secretsmanager_secret_version" "ledger_database" {
+  secret_id                = aws_secretsmanager_secret.ledger_database.id
+  secret_string_wo         = jsonencode({ username = "ledger_app", password = trimspace(file(pathexpand(var.ledger_database_password_file))) })
+  secret_string_wo_version = parseint(substr(filesha256(pathexpand(var.ledger_database_password_file)), 0, 8), 16)
 }
 
 # DB bootstrap Pod만 맡는 EKS Pod Identity용 역할이다. 신뢰 주체를
