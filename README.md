@@ -40,7 +40,7 @@ ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입�
 | 항목 | 설정 |
 | --- | --- |
 | AWS Region | `ap-northeast-2` |
-| VPC | 기존 `vpc-07194d5f908bac7cf` 재사용, CIDR `192.168.0.0/16` |
+| VPC | 기존 `vpc-0a36febf3057e5da0` 재사용, CIDR `192.168.0.0/16` |
 | Subnet CIDR | public `192.168.2.0/24` `192.168.3.0/24` · private `192.168.8.0/24` `192.168.9.0/24` · db `192.168.16.0/24` `192.168.17.0/24` |
 | EKS Version | `1.36` |
 | EKS Node | `t3.medium`, On-Demand, 2대 |

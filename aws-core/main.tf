@@ -1,7 +1,7 @@
 # =========================================================
 # Network
 # - 기존 VPC를 재사용한다. VPC 자체는 Terraform이 생성하지 않는다.
-# - vpc-07194d5f908bac7cf: 192.168.0.0/16
+# - vpc-0a36febf3057e5da0: 192.168.0.0/16
 # =========================================================
 
 module "network" {
@@ -10,7 +10,7 @@ module "network" {
   project_name = "boa"
   cluster_name = "boa-eks"
 
-  vpc_id = "vpc-07194d5f908bac7cf"
+  vpc_id = "vpc-0a36febf3057e5da0"
 
   availability_zones = [
     "ap-northeast-2a",

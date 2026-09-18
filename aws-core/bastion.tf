@@ -6,32 +6,6 @@
 # 별도의 시작 스크립트(user_data)는 사용하지 않는다.
 # ============================================================================
 
-# Amazon Linux 2023 x86_64의 최신 공식 AMI를 조회한다.
-data "aws_ami" "bastion" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
-  }
-
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
-
-  filter {
-    name   = "root-device-type"
-    values = ["ebs"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
 # AWS에 이미 등록된 키페어를 재사용한다. 새 개인 키는 만들지 않는다.
 data "aws_key_pair" "bastion" {
   key_name = "boa-bastion"
@@ -80,7 +54,8 @@ resource "aws_vpc_security_group_egress_rule" "bastion_all" {
 }
 
 resource "aws_instance" "bastion" {
-  ami           = data.aws_ami.bastion.id
+  # 기존 Bastion과 동일한 Amazon Linux 2023 AMI를 고정해 사용한다.
+  ami           = "ami-0c97793ee5ea0967f"
   instance_type = "t3.micro"
 
   subnet_id                   = module.network.public_subnet_ids[0]

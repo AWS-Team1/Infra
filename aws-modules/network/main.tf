@@ -3,6 +3,16 @@
 # ===================================================
 # VPC는 기존 것을 재사용한다.
 
+# 이전 코드가 관리하던 VPC를 실제로 삭제하지 않고
+# Terraform State에서만 관리 대상을 해제한다.
+removed {
+  from = aws_vpc.main
+
+  lifecycle {
+    destroy = false
+  }
+}
+
 data "aws_vpc" "main" {
   id = var.vpc_id
 }
