@@ -16,12 +16,9 @@ variable "vpc_cidr" {
   type        = string
 }
 
-# 기존 S3 Gateway Endpoint. 새로 만드는 private route table 에 연결만 추가한다.
-# 빈 문자열이면 연결하지 않는다.
-variable "s3_gateway_endpoint_id" {
-  description = "기존 S3 Gateway VPC Endpoint ID (없으면 빈 문자열)"
+variable "region" {
+  description = "S3 Gateway Endpoint service name에 사용할 AWS 리전"
   type        = string
-  default     = ""
 }
 
 variable "availability_zones" {

@@ -257,24 +257,20 @@ resource "aws_route_table_association" "private_c" {
 
 
 # ===================================================
-#       S3 GATEWAY ENDPOINT 연결
+#       S3 GATEWAY ENDPOINT
 # ===================================================
-# 엔드포인트 자체는 기존 것을 그대로 쓰고, 새 private route table 에
-# 경로만 추가한다. var.s3_gateway_endpoint_id 가 비면 건너뛴다.
+# Gateway Endpoint는 VPC 전용이므로 새 VPC와 함께 새로 만든다.
+# 두 private route table을 직접 연결해 S3 트래픽이 NAT를 거치지 않게 한다.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids = [
+    aws_route_table.private_a.id,
+    aws_route_table.private_c.id
+  ]
 
-# 프라이빗 a 의 S3 트래픽을 NAT 대신 게이트웨이 엔드포인트로 보낸다.
-# NAT 데이터 처리 요금을 아끼고 트래픽이 AWS 백본 안에 머문다.
-resource "aws_vpc_endpoint_route_table_association" "s3_private_a" {
-  count = var.s3_gateway_endpoint_id == "" ? 0 : 1
-
-  vpc_endpoint_id = var.s3_gateway_endpoint_id
-  route_table_id  = aws_route_table.private_a.id
-}
-
-# 프라이빗 c 도 같은 엔드포인트에 연결.
-resource "aws_vpc_endpoint_route_table_association" "s3_private_c" {
-  count = var.s3_gateway_endpoint_id == "" ? 0 : 1
-
-  vpc_endpoint_id = var.s3_gateway_endpoint_id
-  route_table_id  = aws_route_table.private_c.id
+  tags = {
+    Name = "${var.project_name}-s3-endpoint"
+  }
 }

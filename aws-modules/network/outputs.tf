@@ -10,6 +10,10 @@ output "igw_id" {
   value = aws_internet_gateway.main.id
 }
 
+output "s3_gateway_endpoint_id" {
+  value = aws_vpc_endpoint.s3.id
+}
+
 output "public_subnet_ids" {
   value = [
     aws_subnet.public_a.id,

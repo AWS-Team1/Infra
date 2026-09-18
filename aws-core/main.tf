@@ -10,11 +10,8 @@ module "network" {
   project_name = "boa"
   cluster_name = "boa-eks"
 
+  region   = "ap-northeast-2"
   vpc_cidr = "192.168.0.0/16"
-
-  # 이전 VPC 의 Gateway Endpoint 는 새 VPC 에 연결할 수 없다.
-  # 현재는 NAT 경로를 사용하고, 필요하면 새 VPC 전용 S3 Endpoint 를 별도로 만든다.
-  s3_gateway_endpoint_id = ""
 
   availability_zones = [
     "ap-northeast-2a",
