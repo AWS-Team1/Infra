@@ -13,14 +13,6 @@ output "igw_id" {
   value = module.network.igw_id
 }
 
-output "s3_gateway_endpoint_id" {
-  value = module.network.s3_gateway_endpoint_id
-}
-
-output "private_hosted_zone_id" {
-  value = aws_route53_zone_association.boa_internal.zone_id
-}
-
 output "public_subnet_ids" {
   value = module.network.public_subnet_ids
 }

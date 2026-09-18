@@ -1,7 +1,7 @@
 # =========================================================
 # Network
-# - boa-vpc 와 IGW 를 Terraform 으로 새로 생성한다.
-# - VPC CIDR: 192.168.0.0/16
+# - 기존 VPC를 재사용한다. VPC 자체는 Terraform이 생성하지 않는다.
+# - vpc-07194d5f908bac7cf: 192.168.0.0/16
 # =========================================================
 
 module "network" {
@@ -10,8 +10,7 @@ module "network" {
   project_name = "boa"
   cluster_name = "boa-eks"
 
-  region   = "ap-northeast-2"
-  vpc_cidr = "192.168.0.0/16"
+  vpc_id = "vpc-07194d5f908bac7cf"
 
   availability_zones = [
     "ap-northeast-2a",

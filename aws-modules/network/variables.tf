@@ -10,14 +10,9 @@ variable "cluster_name" {
   type        = string
 }
 
-# 새로 생성할 VPC 의 IPv4 CIDR 이다.
-variable "vpc_cidr" {
-  description = "boa-vpc IPv4 CIDR"
-  type        = string
-}
-
-variable "region" {
-  description = "S3 Gateway Endpoint service name에 사용할 AWS 리전"
+# 기존 VPC를 재사용한다. 이 모듈은 VPC를 생성하지 않는다.
+variable "vpc_id" {
+  description = "재사용할 기존 VPC ID"
   type        = string
 }
 

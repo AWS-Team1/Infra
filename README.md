@@ -9,7 +9,7 @@ ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입�
 ```text
 .
 ├── aws-modules/                재사용 모듈. backend 없음, .terraform.lock.hcl 추적 안 함
-│   ├── network/                VPC / Public·Private·DB·Cache Subnet / NAT / S3 Gateway Endpoint
+│   ├── network/                기존 VPC / Public·Private·DB·Cache Subnet / NAT
 │   ├── eks-iam/                IAM 역할·정책·부착 (클러스터 미참조)
 │   ├── eks/                    EKS Cluster / Managed Node Group / Add-ons / Pod Identity / Access Entry
 │   ├── rds/                    PostgreSQL RDS / Subnet·Parameter Group / 보안 그룹 / 모니터링 IAM·로그
@@ -29,7 +29,7 @@ ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입�
 
 ## 구성 개요
 
-- Network(`aws-core`): 새 VPC와 2개 가용 영역의 Public, Private, DB, Cache Subnet을 생성합니다. Private Subnet은 가용 영역별 NAT Gateway를 사용하며 S3 트래픽은 전용 Gateway Endpoint로 보냅니다. 기존 `boa.internal` Private Hosted Zone도 새 VPC에 연결합니다.
+- Network(`aws-core`): 기존 VPC를 재사용하고 2개 가용 영역의 Public, Private, DB, Cache Subnet을 관리합니다. Private Subnet은 가용 영역별 NAT Gateway를 사용합니다.
 - EKS(`aws-eks`): Private Subnet에 Kubernetes 클러스터와 Managed Node Group을 생성합니다. VPC CNI, CoreDNS, kube-proxy, EBS CSI, Pod Identity Agent 애드온과 AWS Load Balancer Controller를 함께 설치합니다. IAM은 `eks-iam` 모듈이 별도로 담당합니다(클러스터 미참조 — [설계 문서 §6](docs/specs/2026-09-14-terraform-root-split-design.md) 참조).
 - RDS(`aws-rds`): DB Subnet에 암호화된 PostgreSQL Multi-AZ 인스턴스를 생성합니다. 인바운드 5432는 EKS 클러스터 보안 그룹이 아니라 **프라이빗 서브넷 CIDR**로 허용합니다(`aws-rds`가 `aws-eks`를 몰라도 되게 하는 설계 — 설계 문서 결정 3). Master 비밀번호는 AWS Secrets Manager에서 관리하고 백업·Performance Insights·Enhanced Monitoring을 활성화합니다.
 - ElastiCache(`aws-cache`): Private Subnet에 Serverless Valkey 캐시를 생성합니다. 접속 비밀번호는 무작위로 생성해 Secrets Manager에 저장하고 RBAC 사용자 그룹에 연결합니다.
@@ -40,7 +40,7 @@ ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입�
 | 항목 | 설정 |
 | --- | --- |
 | AWS Region | `ap-northeast-2` |
-| VPC | Terraform 신규 생성, CIDR `192.168.0.0/16` |
+| VPC | 기존 `vpc-07194d5f908bac7cf` 재사용, CIDR `192.168.0.0/16` |
 | Subnet CIDR | public `192.168.2.0/24` `192.168.3.0/24` · private `192.168.8.0/24` `192.168.9.0/24` · db `192.168.16.0/24` `192.168.17.0/24` |
 | EKS Version | `1.36` |
 | EKS Node | `t3.medium`, On-Demand, 2대 |

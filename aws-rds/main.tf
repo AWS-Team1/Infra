@@ -41,8 +41,14 @@ module "rds" {
   enable_logical_replication = true
 }
 
+data "aws_route53_zone" "private" {
+  name         = "boa.internal."
+  private_zone = true
+  vpc_id       = data.terraform_remote_state.core.outputs.vpc_id
+}
+
 resource "aws_route53_record" "database" {
-  zone_id = data.terraform_remote_state.core.outputs.private_hosted_zone_id
+  zone_id = data.aws_route53_zone.private.zone_id
   name    = "db.boa.internal"
   type    = "CNAME"
   ttl     = 60

@@ -1,23 +1,16 @@
 # ===================================================
-#       VPC
+#       기존 VPC 참조
 # ===================================================
-# boa-vpc 를 이 모듈이 직접 만들고 관리한다.
+# VPC는 기존 것을 재사용한다.
 
-resource "aws_vpc" "main" {
-  cidr_block = var.vpc_cidr
-
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-
-  tags = {
-    Name = "${var.project_name}-vpc"
-  }
+data "aws_vpc" "main" {
+  id = var.vpc_id
 }
 
 # 인터넷 게이트웨이. 퍼블릭 라우팅 테이블의 0.0.0.0/0 목적지이고,
 # NAT 게이트웨이가 이걸 거쳐 나간다.
 resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = data.aws_vpc.main.id
 
   tags = {
     Name = "${var.project_name}-igw"
@@ -32,7 +25,7 @@ resource "aws_internet_gateway" "main" {
 # 퍼블릭 a — NAT 게이트웨이와 ops ALB 가 여기 들어간다.
 # kubernetes.io/role/elb 태그로 ALB 컨트롤러가 인터넷 향 ALB 자리를 찾는다.
 resource "aws_subnet" "public_a" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = data.aws_vpc.main.id
   cidr_block              = var.public_subnet_cidrs[0]
   availability_zone       = var.availability_zones[0]
   map_public_ip_on_launch = true
@@ -45,7 +38,7 @@ resource "aws_subnet" "public_a" {
 
 # 퍼블릭 c — 위와 같은 역할의 다른 가용영역. ALB 는 최소 2개 AZ 를 요구한다.
 resource "aws_subnet" "public_c" {
-  vpc_id                  = aws_vpc.main.id
+  vpc_id                  = data.aws_vpc.main.id
   cidr_block              = var.public_subnet_cidrs[1]
   availability_zone       = var.availability_zones[1]
   map_public_ip_on_launch = true
@@ -60,7 +53,7 @@ resource "aws_subnet" "public_c" {
 # internal-elb 태그는 내부용 ALB/NLB 탐색에, karpenter.sh/discovery 는
 # Karpenter 가 노드를 띄울 서브넷을 찾는 데 쓴다.
 resource "aws_subnet" "private_a" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = data.aws_vpc.main.id
   cidr_block        = var.private_subnet_cidrs[0]
   availability_zone = var.availability_zones[0]
 
@@ -73,7 +66,7 @@ resource "aws_subnet" "private_a" {
 
 # 프라이빗 c — 위와 같은 역할의 다른 가용영역.
 resource "aws_subnet" "private_c" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = data.aws_vpc.main.id
   cidr_block        = var.private_subnet_cidrs[1]
   availability_zone = var.availability_zones[1]
 
@@ -87,23 +80,23 @@ resource "aws_subnet" "private_c" {
 # DB a — RDS 전용. aws-rds 루트가 db_subnet_ids 로 받아 서브넷 그룹을 만든다.
 # 라우팅 테이블을 붙이지 않아 메인 RT(local 만)를 상속한다 — 외부로 나가지 않는다.
 resource "aws_subnet" "db_a" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = data.aws_vpc.main.id
   cidr_block        = var.db_subnet_cidrs[0]
   availability_zone = var.availability_zones[0]
 
   tags = {
-    Name = "${var.project_name}-dms-a"
+    Name = "${var.project_name}-db-a"
   }
 }
 
 # DB c — Multi-AZ RDS 는 서로 다른 가용영역의 서브넷 2개를 요구한다.
 resource "aws_subnet" "db_c" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = data.aws_vpc.main.id
   cidr_block        = var.db_subnet_cidrs[1]
   availability_zone = var.availability_zones[1]
 
   tags = {
-    Name = "${var.project_name}-dms-c"
+    Name = "${var.project_name}-db-c"
   }
 }
 
@@ -113,7 +106,7 @@ resource "aws_subnet" "db_c" {
 #   2) NACL 은 서브넷 단위라 같은 서브넷이면 파드와 캐시를 구분할 수 없다
 # db 서브넷과 마찬가지로 라우팅 테이블을 붙이지 않는다 — 외부로 나가지 않는다.
 resource "aws_subnet" "cache_a" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = data.aws_vpc.main.id
   cidr_block        = var.cache_subnet_cidrs[0]
   availability_zone = var.availability_zones[0]
 
@@ -124,7 +117,7 @@ resource "aws_subnet" "cache_a" {
 
 # 캐시 c — ElastiCache 서브넷 그룹도 서로 다른 가용영역 2개를 요구한다.
 resource "aws_subnet" "cache_c" {
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = data.aws_vpc.main.id
   cidr_block        = var.cache_subnet_cidrs[1]
   availability_zone = var.availability_zones[1]
 
@@ -140,7 +133,7 @@ resource "aws_subnet" "cache_c" {
 
 # 퍼블릭 서브넷용 라우팅 테이블. 기본 경로를 IGW 로 보낸다.
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = data.aws_vpc.main.id
 
   route {
     cidr_block = "0.0.0.0/0"
@@ -215,7 +208,7 @@ resource "aws_nat_gateway" "nat_c" {
 
 # 프라이빗 a 용 라우팅 테이블. 기본 경로를 같은 AZ 의 NAT 로 보낸다.
 resource "aws_route_table" "private_a" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = data.aws_vpc.main.id
 
   route {
     cidr_block     = "0.0.0.0/0"
@@ -230,7 +223,7 @@ resource "aws_route_table" "private_a" {
 # 프라이빗 c 용 라우팅 테이블. AZ 별로 나눈 이유가 여기 있다 —
 # 하나로 합치면 한쪽 NAT 장애가 양쪽 AZ 를 같이 끊는다.
 resource "aws_route_table" "private_c" {
-  vpc_id = aws_vpc.main.id
+  vpc_id = data.aws_vpc.main.id
 
   route {
     cidr_block     = "0.0.0.0/0"
@@ -253,24 +246,4 @@ resource "aws_route_table_association" "private_a" {
 resource "aws_route_table_association" "private_c" {
   subnet_id      = aws_subnet.private_c.id
   route_table_id = aws_route_table.private_c.id
-}
-
-
-# ===================================================
-#       S3 GATEWAY ENDPOINT
-# ===================================================
-# Gateway Endpoint는 VPC 전용이므로 새 VPC와 함께 새로 만든다.
-# 두 private route table을 직접 연결해 S3 트래픽이 NAT를 거치지 않게 한다.
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${var.region}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids = [
-    aws_route_table.private_a.id,
-    aws_route_table.private_c.id
-  ]
-
-  tags = {
-    Name = "${var.project_name}-s3-endpoint"
-  }
 }
