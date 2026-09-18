@@ -12,7 +12,7 @@ output "node_role_arn" {
     aws_iam_role_policy_attachment.node_worker,
     aws_iam_role_policy_attachment.node_ecr,
     aws_iam_role_policy_attachment.node_cni,
-    aws_iam_role_policy_attachment.node_secrets
+    # aws_iam_role_policy_attachment.node_secrets
   ]
 }
 

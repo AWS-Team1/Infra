@@ -1,7 +1,7 @@
 # =========================================================
 # Network
-# - boa-vpc 와 IGW 를 Terraform 으로 새로 생성한다.
-# - VPC CIDR: 192.168.0.0/16
+# - 기존 VPC를 재사용한다. VPC 자체는 Terraform이 생성하지 않는다.
+# - vpc-0a36febf3057e5da0: 192.168.0.0/16
 # =========================================================
 
 module "network" {
@@ -10,11 +10,7 @@ module "network" {
   project_name = "boa"
   cluster_name = "boa-eks"
 
-  vpc_cidr = "192.168.0.0/16"
-
-  # 이전 VPC 의 Gateway Endpoint 는 새 VPC 에 연결할 수 없다.
-  # 현재는 NAT 경로를 사용하고, 필요하면 새 VPC 전용 S3 Endpoint 를 별도로 만든다.
-  s3_gateway_endpoint_id = ""
+  vpc_id = "vpc-0a36febf3057e5da0"
 
   availability_zones = [
     "ap-northeast-2a",
@@ -41,4 +37,16 @@ module "network" {
     "192.168.24.0/24",
     "192.168.25.0/24"
   ]
+}
+
+
+data "aws_route53_zone" "boa_internal" {
+  name         = "boa.internal."
+  private_zone = true
+}
+
+resource "aws_route53_zone_association" "boa_internal" {
+  zone_id    = data.aws_route53_zone.boa_internal.zone_id
+  vpc_id     = module.network.vpc_id
+  vpc_region = "ap-northeast-2"
 }

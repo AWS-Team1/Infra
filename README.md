@@ -1,13 +1,15 @@
 # AWS Infrastructure with Terraform
 
-Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreSQL RDS, ElastiCache Serverless Valkey를 구성하는 프로젝트입니다. 저장소 최상위에는 `.tf` 파일이 없고, 재사용 모듈과 독립된 루트 4개로 나뉘어 있습니다.
+Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreSQL RDS,
+ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입니다. 저장소 최상위에는
+`.tf` 파일이 없고 재사용 모듈과 독립된 root로 나뉩니다.
 
 ## 디렉터리 구조
 
 ```text
 .
 ├── aws-modules/                재사용 모듈. backend 없음, .terraform.lock.hcl 추적 안 함
-│   ├── network/                VPC(기존 재사용) / Public·Private·DB Subnet / NAT / Route Table
+│   ├── network/                기존 VPC / Public·Private·DB·Cache Subnet / NAT
 │   ├── eks-iam/                IAM 역할·정책·부착 (클러스터 미참조)
 │   ├── eks/                    EKS Cluster / Managed Node Group / Add-ons / Pod Identity / Access Entry
 │   ├── rds/                    PostgreSQL RDS / Subnet·Parameter Group / 보안 그룹 / 모니터링 IAM·로그
@@ -17,16 +19,17 @@ Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreS
 ├── aws-eks/                    루트 — eks-iam · eks · aws-load-balancer-controller
 ├── aws-rds/                    루트 — rds
 ├── aws-cache/                  루트 — elasticache
-├── aws-cd-bootstrap/           루트 — Argo CD IAM·Secret·DNS 사전조건
-├── boa/k8s/                    쿠버네티스 매니페스트
+├── aws-ops/                    루트 — ECR · ops ALB
+├── aws-db-bootstrap/           루트 — DB Secret · bootstrap IAM/Pod Identity
 └── docs/specs/                 설계 문서
 ```
 
-네 루트 공통 구성은 `backend.tf` · `versions.tf` · `providers.tf` · `main.tf` · `outputs.tf` · `.terraform.lock.hcl`입니다. `aws-eks`만 추가로 `variables.tf`(`code_server_role_arn`) · `rbac.tf` · `terraform.tfvars`(.gitignore)를 가집니다. 모듈 목록과 역할은 [설계 문서 §4](docs/specs/2026-09-14-terraform-root-split-design.md)를 참조하세요.
+각 root는 독립된 backend와 state를 사용합니다. `aws-eks`는 추가로
+`variables.tf`(`code_server_role_arn`) · `rbac.tf` · `terraform.tfvars`(.gitignore)를 가집니다.
 
 ## 구성 개요
 
-- Network(`aws-core`): 기존 VPC를 재사용하고, 2개 가용 영역에 Public, Private, DB Subnet을 구성합니다. Private Subnet은 가용 영역별 NAT Gateway를 통해 외부로 통신합니다.
+- Network(`aws-core`): 기존 VPC를 재사용하고 2개 가용 영역의 Public, Private, DB, Cache Subnet을 관리합니다. Private Subnet은 가용 영역별 NAT Gateway를 사용합니다.
 - EKS(`aws-eks`): Private Subnet에 Kubernetes 클러스터와 Managed Node Group을 생성합니다. VPC CNI, CoreDNS, kube-proxy, EBS CSI, Pod Identity Agent 애드온과 AWS Load Balancer Controller를 함께 설치합니다. IAM은 `eks-iam` 모듈이 별도로 담당합니다(클러스터 미참조 — [설계 문서 §6](docs/specs/2026-09-14-terraform-root-split-design.md) 참조).
 - RDS(`aws-rds`): DB Subnet에 암호화된 PostgreSQL Multi-AZ 인스턴스를 생성합니다. 인바운드 5432는 EKS 클러스터 보안 그룹이 아니라 **프라이빗 서브넷 CIDR**로 허용합니다(`aws-rds`가 `aws-eks`를 몰라도 되게 하는 설계 — 설계 문서 결정 3). Master 비밀번호는 AWS Secrets Manager에서 관리하고 백업·Performance Insights·Enhanced Monitoring을 활성화합니다.
 - ElastiCache(`aws-cache`): Private Subnet에 Serverless Valkey 캐시를 생성합니다. 접속 비밀번호는 무작위로 생성해 Secrets Manager에 저장하고 RBAC 사용자 그룹에 연결합니다.
@@ -37,7 +40,7 @@ Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreS
 | 항목 | 설정 |
 | --- | --- |
 | AWS Region | `ap-northeast-2` |
-| VPC | 기존 `vpc-07194d5f908bac7cf` 재사용, CIDR `192.168.0.0/16` |
+| VPC | 기존 `vpc-0a36febf3057e5da0` 재사용, CIDR `192.168.0.0/16` |
 | Subnet CIDR | public `192.168.2.0/24` `192.168.3.0/24` · private `192.168.8.0/24` `192.168.9.0/24` · db `192.168.16.0/24` `192.168.17.0/24` |
 | EKS Version | `1.36` |
 | EKS Node | `t3.medium`, On-Demand, 2대 |
@@ -46,7 +49,7 @@ Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreS
 
 ## 사전 준비
 
-- Terraform 1.10 이상
+- Terraform 1.11 이상
 - AWS 리소스를 생성할 수 있는 자격 증명
 - State 저장용 S3 Bucket `boa-terraform-state-6416` (아래 "루트 구조" 절 참조)
 - EKS 관리자 권한을 연결할 IAM Role ARN
@@ -59,7 +62,8 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 
 ## 실행 방법
 
-저장소 최상위에는 실행할 `.tf`가 없습니다. 루트 4개(`aws-core` `aws-eks` `aws-rds` `aws-cache`) 각각에서 `-chdir`로 따로 실행합니다 — 명령과 순서는 아래 "루트 구조" 절을 참조하세요.
+저장소 최상위에는 실행할 `.tf`가 없습니다. `aws-core` → `aws-rds` → `aws-cache` →
+`aws-eks` → `aws-ops` → `aws-db-bootstrap` 순서로 각 root를 실행합니다.
 
 ## 주의사항
 
@@ -78,7 +82,7 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 | `aws-rds` | `aws/rds/terraform.tfstate` | aws | core |
 | `aws-cache` | `aws/cache/terraform.tfstate` | aws | core |
 | `aws-ops` | `aws/ops/terraform.tfstate` | aws | core |
-| `aws-cd-bootstrap` | `aws/cd-bootstrap/terraform.tfstate` | aws | eks · rds · ops |
+| `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | aws | eks · rds |
 
 `aws-ops` 는 ECR 과 ops ALB 를 갖는다. ALB 가 VPC·퍼블릭 서브넷을 필요로 하므로 core 를 읽는다.
 
@@ -93,12 +97,12 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 
 ### apply
 
-`aws-core` 를 먼저 적용한다. `aws-eks` · `aws-rds` · `aws-cache` · `aws-ops`는
-그 뒤 적용하고, 마지막으로 `aws-cd-bootstrap`을 적용한다.
+`aws-core`를 먼저 적용한다. `aws-rds` · `aws-cache` · `aws-eks` · `aws-ops`를
+그 뒤 적용하고, 마지막으로 `aws-db-bootstrap`을 적용한다.
 `aws-eks` 는 `terraform.tfvars` 의 `code_server_role_arn` 이 필요하다 (저장소에 없음).
 
-`aws-cd-bootstrap`의 `HARD-CODED` 주석은 다른 계정·리전·도메인에 재사용할 때
-반드시 확인한다. 상세 순서는 GitOps 저장소의 `docs/ARGOCD_EKS_RUNBOOK.md`를 따른다.
+`aws-db-bootstrap`의 `HARD-CODED` 주석은 다른 계정·리전에 재사용할 때 반드시 확인한다.
+상세 순서는 GitOps 저장소의 `docs/EKS_GITOPS_CICD_RUNBOOK.md`를 따른다.
 
 ### 삭제 순서
 

@@ -56,8 +56,25 @@ module "ops_alb" {
   # ACM 인증서는 이미 발급된 것을 읽어 쓴다.
   certificate_domain = "*.bespinglobal.site"
 
-  # 리스너 규칙의 Host 조건에만 쓴다. 이 이름의 DNS 레코드는 Terraform 이 만들지 않는다
-  # — bespinglobal.site 는 app · prod · origin 이 함께 쓰는 공용 호스팅 영역이다.
+  # argocd_host는 HTTPS 리스너 Host 조건과 Route53 A(alias) 이름에 함께 사용한다.
   argocd_host        = "argocd.bespinglobal.site"
   argocd_target_port = 8080
+}
+
+data "aws_route53_zone" "public" {
+  # HARD-CODED: ACM 인증서와 ops ALB Host 조건에 맞는 Public Hosted Zone이다.
+  name         = "bespinglobal.site."
+  private_zone = false
+}
+
+resource "aws_route53_record" "argocd" {
+  zone_id = data.aws_route53_zone.public.zone_id
+  name    = "argocd.bespinglobal.site"
+  type    = "A"
+
+  alias {
+    name                   = module.ops_alb.alb_dns_name
+    zone_id                = module.ops_alb.alb_zone_id
+    evaluate_target_health = true
+  }
 }

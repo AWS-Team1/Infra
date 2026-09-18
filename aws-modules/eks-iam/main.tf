@@ -325,41 +325,43 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_controller" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
+
 # 노드 인스턴스 역할에 붙는 Secrets Manager 읽기 권한.
 # 주의 — 노드 역할이라 그 노드의 모든 파드가 IMDS 로 접근할 수 있다.
 # Secrets Store CSI 드라이버가 이 경로를 쓰고 있을 수 있어 제거 전 확인이 필요하다.
-resource "aws_iam_policy" "node_secrets" {
-  name = "${var.cluster_name}-node-secrets-policy"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-
-    Statement = [
-      {
-        Effect = "Allow"
-
-        Action = [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret"
-        ]
-
-        Resource = [
-          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/${var.project_name}/*"
-        ]
-      }
-    ]
-  })
-
-  tags = {
-    Name = "${var.cluster_name}-node-secrets-policy"
-  }
-}
+# resource "aws_iam_policy" "node_secrets" {
+#   name = "${var.cluster_name}-node-secrets-policy"
+# 
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+# 
+#     Statement = [
+#       {
+#         Effect = "Allow"
+# 
+#         Action = [
+#           "secretsmanager:GetSecretValue",
+#           "secretsmanager:DescribeSecret"
+#         ]
+# 
+#         Resource = [
+#           "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/${var.project_name}/*"
+#         ]
+#       }
+#     ]
+#   })
+# 
+#   tags = {
+#     Name = "${var.cluster_name}-node-secrets-policy"
+#   }
+# }
 
 # 위 정책을 노드 역할에 부착.
-resource "aws_iam_role_policy_attachment" "node_secrets" {
-  role       = aws_iam_role.node.name
-  policy_arn = aws_iam_policy.node_secrets.arn
-}
+# resource "aws_iam_role_policy_attachment" "node_secrets" {
+#   role       = aws_iam_role.node.name
+#   policy_arn = aws_iam_policy.node_secrets.arn
+# }
+
 
 # ============================================================
 # Bank of Anthos - EKS Pod Identity
@@ -413,11 +415,12 @@ resource "aws_iam_policy" "bank_of_anthos_secrets" {
         ]
 
         Resource = [
-          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/${var.project_name}/*",
+          # 애플리케이션은 /boa/* 시크릿만 읽는다.
+          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:/${var.project_name}/*"
 
           # Phase 1:
           # RDS Managed Master Password secret
-          "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:rds!db-*"
+          #"arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:rds!db-*"
         ]
       }
     ]

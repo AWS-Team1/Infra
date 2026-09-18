@@ -10,18 +10,10 @@ variable "cluster_name" {
   type        = string
 }
 
-# 새로 생성할 VPC 의 IPv4 CIDR 이다.
-variable "vpc_cidr" {
-  description = "boa-vpc IPv4 CIDR"
+# 기존 VPC를 재사용한다. 이 모듈은 VPC를 생성하지 않는다.
+variable "vpc_id" {
+  description = "재사용할 기존 VPC ID"
   type        = string
-}
-
-# 기존 S3 Gateway Endpoint. 새로 만드는 private route table 에 연결만 추가한다.
-# 빈 문자열이면 연결하지 않는다.
-variable "s3_gateway_endpoint_id" {
-  description = "기존 S3 Gateway VPC Endpoint ID (없으면 빈 문자열)"
-  type        = string
-  default     = ""
 }
 
 variable "availability_zones" {

@@ -22,3 +22,7 @@ output "db_security_group_id" {
 output "db_instance_identifier" {
   value = module.rds.db_instance_identifier
 }
+
+output "database_private_dns_name" {
+  value = aws_route53_record.database.fqdn
+}
