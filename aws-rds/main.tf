@@ -42,6 +42,7 @@ module "rds" {
 }
 
 data "aws_route53_zone" "private" {
+  # 이 루트보다 먼저 기존 VPC에 연결되어 있어야 한다. aws-db-bootstrap은 실행 순서가 늦다.
   name         = "boa.internal."
   private_zone = true
   vpc_id       = data.terraform_remote_state.core.outputs.vpc_id
