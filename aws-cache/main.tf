@@ -35,3 +35,15 @@ module "elasticache" {
   max_data_storage    = 1
   max_ecpu_per_second = 1000
 }
+
+resource "aws_secretsmanager_secret" "valkey_runtime" {
+  name                    = "/boa/valkey/runtime"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "valkey_runtime" {
+  secret_id = aws_secretsmanager_secret.valkey_runtime.id
+  secret_string = jsonencode({
+    host = module.elasticache.cache_endpoint[0].address
+  })
+}
