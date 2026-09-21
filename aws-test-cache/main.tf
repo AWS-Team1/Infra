@@ -1,0 +1,40 @@
+# aws-core 가 만든 VPC·서브넷을 읽는다. aws-eks 는 참조하지 않는다.
+data "terraform_remote_state" "core" {
+  backend = "s3"
+
+  config = {
+    bucket = "boa-terraform-state-6416"
+    key    = "aws/test/core/terraform.tfstate"
+    region = "ap-northeast-2"
+  }
+}
+
+# =========================================================
+# ElastiCache Serverless Valkey
+# - 로그인 Session / Cache 용도
+# =========================================================
+
+module "elasticache" {
+  source = "../aws-modules/elasticache-manual-credentials"
+
+  project_name = "boa-test"
+
+  # Cache / RBAC User 이름
+  cache_name = "boa-test-valkey"
+  user_name  = "boa-test-app"
+
+  credentials_secret_name = "/boa-test/valkey/credentials"
+  credentials_version     = 1
+
+  vpc_id               = data.terraform_remote_state.core.outputs.vpc_id
+  private_subnet_cidrs = data.terraform_remote_state.core.outputs.private_subnet_cidrs
+
+  # ElastiCache 전용 서브넷. 프라이빗(EKS 파드)과 분리한다.
+  # private_subnet_cidrs 는 위에서 SG 인바운드용으로 따로 받는다 —
+  # 허용 대상은 클라이언트(파드)가 있는 곳이라 캐시 위치와 무관하다.
+  subnet_ids = data.terraform_remote_state.core.outputs.cache_subnet_ids
+
+  # Phase 1 테스트용 낮은 사용량 상한
+  max_data_storage    = 1
+  max_ecpu_per_second = 1000
+}
