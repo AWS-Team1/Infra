@@ -482,6 +482,123 @@ jobs:
           echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" \
             >> "${GITHUB_ENV}"
 
+
+      - name: Pre-authorize current runner on existing EKS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 클러스터가 아직 없다면 최초 생성이므로 Terraform에 맡긴다.
+          if ! aws eks describe-cluster \
+            --name boa-eks \
+            --region "${{ vars.AWS_REGION }}" \
+            >/dev/null 2>&1
+          then
+            echo "boa-eks does not exist yet."
+            echo "Terraform will create it with the current runner CIDR."
+            exit 0
+          fi
+
+          DESIRED_CIDR="${RUNNER_PUBLIC_IP}/32"
+
+          CURRENT_CIDRS="$(
+            aws eks describe-cluster \
+              --name boa-eks \
+              --region "${{ vars.AWS_REGION }}" \
+              --query 'cluster.resourcesVpcConfig.publicAccessCidrs' \
+              --output text
+          )"
+
+          echo "Current EKS CIDRs: ${CURRENT_CIDRS}"
+          echo "Required runner CIDR: ${DESIRED_CIDR}"
+
+          if grep -qw "${DESIRED_CIDR}" <<< "${CURRENT_CIDRS}"; then
+            echo "Current runner is already authorized."
+            exit 0
+          fi
+
+          echo "Updating EKS endpoint CIDR before Terraform refresh..."
+
+          UPDATE_ID="$(
+            aws eks update-cluster-config \
+              --name boa-eks \
+              --region "${{ vars.AWS_REGION }}" \
+              --resources-vpc-config \
+                "{\"endpointPublicAccess\":true,\"endpointPrivateAccess\":true,\"publicAccessCidrs\":[\"${DESIRED_CIDR}\"]}" \
+              --query 'update.id' \
+              --output text
+          )"
+
+          echo "EKS update ID: ${UPDATE_ID}"
+
+          for _ in {1..120}; do
+            STATUS="$(
+              aws eks describe-update \
+                --name boa-eks \
+                --region "${{ vars.AWS_REGION }}" \
+                --update-id "${UPDATE_ID}" \
+                --query 'update.status' \
+                --output text
+            )"
+
+            echo "EKS endpoint update status: ${STATUS}"
+
+            case "${STATUS}" in
+              Successful)
+                break
+                ;;
+              Failed|Cancelled)
+                echo "EKS endpoint CIDR update failed."
+                exit 1
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          STATUS="$(
+            aws eks describe-update \
+              --name boa-eks \
+              --region "${{ vars.AWS_REGION }}" \
+              --update-id "${UPDATE_ID}" \
+              --query 'update.status' \
+              --output text
+          )"
+
+          test "${STATUS}" = "Successful"
+
+          ENDPOINT="$(
+            aws eks describe-cluster \
+              --name boa-eks \
+              --region "${{ vars.AWS_REGION }}" \
+              --query 'cluster.endpoint' \
+              --output text
+          )"
+
+          echo "Checking network reachability to EKS API..."
+
+          for _ in {1..30}; do
+            HTTP_CODE="$(
+              curl -sk \
+                --connect-timeout 5 \
+                --max-time 10 \
+                -o /dev/null \
+                -w '%{http_code}' \
+                "${ENDPOINT}" || true
+            )"
+
+            if [[ "${HTTP_CODE}" != "000" ]]; then
+              echo "EKS API is reachable. HTTP ${HTTP_CODE}"
+              exit 0
+            fi
+
+            echo "Waiting for EKS API network access..."
+            sleep 5
+          done
+
+          echo "EKS API is still unreachable."
+          exit 1
+
       - name: Verify EKS access variable
         shell: bash
         run: |
@@ -764,4 +881,3 @@ jobs:
         working-directory: aws-db-bootstrap
         shell: bash
         run: terraform output
-        
