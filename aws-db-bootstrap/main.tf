@@ -36,8 +36,7 @@ data "terraform_remote_state" "rds" {
 }
 
 
-# 아래 세 리소스는 Secret 컨테이너를 만들고 로컬 캐시의 비밀번호를 write-only로 저장한다.
-# 비밀번호 평문은 plan/state에 남지 않으며 파일 내용이 바뀌면 새 Version을 만든다.
+# 아래 세 리소스는 Secret 컨테이너를 만든다.
 # /boa/database/app은 기존 단일 bank_app 계정 구조와의 호환을 위해 유지한다.
 resource "aws_secretsmanager_secret" "app_database" {
   # HARD-CODED: 애플리케이션 SecretProviderClass와 같은 이름이어야 한다.
@@ -72,22 +71,40 @@ resource "aws_secretsmanager_secret" "ledger_database" {
   }
 }
 
+# 평문을 파일·plan·state에 남기지 않는다. 비밀번호는 apply 중 메모리에서만
+# 생성되어 write-only 인자로 Secrets Manager에 전달된다.
+ephemeral "random_password" "app_database" {
+  length  = 64
+  special = false
+}
+
+ephemeral "random_password" "accounts_database" {
+  length  = 64
+  special = false
+}
+
+ephemeral "random_password" "ledger_database" {
+  length  = 64
+  special = false
+}
+
 resource "aws_secretsmanager_secret_version" "app_database" {
-  secret_id                = aws_secretsmanager_secret.app_database.id
-  secret_string_wo         = jsonencode({ username = "bank_app", password = trimspace(file(pathexpand(var.app_database_password_file))) })
-  secret_string_wo_version = parseint(substr(filesha256(pathexpand(var.app_database_password_file)), 0, 8), 16)
+  secret_id        = aws_secretsmanager_secret.app_database.id
+  secret_string_wo = jsonencode({ username = "bank_app", password = ephemeral.random_password.app_database.result })
+  # 비밀값이 아닌 생성 토큰이다. 의도적으로 비밀번호를 바꿀 때만 변경한다.
+  secret_string_wo_version = 2298761427
 }
 
 resource "aws_secretsmanager_secret_version" "accounts_database" {
   secret_id                = aws_secretsmanager_secret.accounts_database.id
-  secret_string_wo         = jsonencode({ username = "accounts_app", password = trimspace(file(pathexpand(var.accounts_database_password_file))) })
-  secret_string_wo_version = parseint(substr(filesha256(pathexpand(var.accounts_database_password_file)), 0, 8), 16)
+  secret_string_wo         = jsonencode({ username = "accounts_app", password = ephemeral.random_password.accounts_database.result })
+  secret_string_wo_version = 1017649738
 }
 
 resource "aws_secretsmanager_secret_version" "ledger_database" {
   secret_id                = aws_secretsmanager_secret.ledger_database.id
-  secret_string_wo         = jsonencode({ username = "ledger_app", password = trimspace(file(pathexpand(var.ledger_database_password_file))) })
-  secret_string_wo_version = parseint(substr(filesha256(pathexpand(var.ledger_database_password_file)), 0, 8), 16)
+  secret_string_wo         = jsonencode({ username = "ledger_app", password = ephemeral.random_password.ledger_database.result })
+  secret_string_wo_version = 47741656
 }
 
 # DB bootstrap Pod만 맡는 EKS Pod Identity용 역할이다. 신뢰 주체를
