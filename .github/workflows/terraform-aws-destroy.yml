@@ -181,7 +181,7 @@ jobs:
   # 순서:
   # Runner /32 허용
   # → Argo CD reconcile 정지
-  # → Ingress/TGB/Karpenter 정리
+  # → Ingress/TGB/Karpenter NodePool/NodeClaim/EC2NodeClass 정리
   # → 앱 ALB 삭제 대기
   # → DB Bootstrap Pod Identity 분리
   # → JWT Secret state에서만 분리
@@ -412,6 +412,27 @@ jobs:
           else
 
             echo "No Karpenter NodeClaims found."
+
+          fi
+
+          # EC2NodeClass가 spec.role을 사용하므로 Karpenter가 생성한
+          # IAM Instance Profile을 정리하려면 NodeClaim 회수 후
+          # EC2NodeClass도 삭제하고 finalizer 완료까지 기다려야 한다.
+          kubectl delete ec2nodeclass default \
+            --ignore-not-found \
+            --wait=false || true
+
+          if kubectl get ec2nodeclass default \
+            >/dev/null 2>&1
+          then
+
+            kubectl wait \
+              --for=delete ec2nodeclass/default \
+              --timeout=10m
+
+          else
+
+            echo "Karpenter EC2NodeClass default is already absent."
 
           fi
 
@@ -1218,4 +1239,5 @@ jobs:
             --region "${AWS_REGION_FIXED}" \
             --query "SecretList[?starts_with(Name, '/boa/jwt/') || starts_with(Name, '/boa/database/')].Name" \
             --output table || true
+
             
