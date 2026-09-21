@@ -132,18 +132,16 @@ jobs:
           BLOCKED=0
 
           DMS_INSTANCE="$(
-            aws dms describe-replication-instances \
-              --filters Name=replication-instance-id,Values=boa-dms \
-              --query 'ReplicationInstances[].ReplicationInstanceIdentifier' \
-              --output text
+           aws dms describe-replication-instances \
+             --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" \
+             --output text
           )"
-
+          
           DMS_SUBNET_GROUP="$(
-            aws dms describe-replication-subnet-groups \
-              --filters Name=replication-subnet-group-id,Values=boa-dms-subnet-group \
-              --query 'ReplicationSubnetGroups[].ReplicationSubnetGroupIdentifier' \
-              --output text
-          )"
+           aws dms describe-replication-subnet-groups \
+             --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" \
+            --output text
+            )"
 
           if [[ -n "${DMS_INSTANCE}" || -n "${DMS_SUBNET_GROUP}" ]]; then
             echo "AWS DMS resources still exist."
