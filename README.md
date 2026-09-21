@@ -1,4 +1,4 @@
-# AWS Infrastructure with Terraform
+# AWS/GCP Infrastructure with Terraform
 
 Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreSQL RDS,
 ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입니다. 저장소 최상위에는
@@ -21,6 +21,7 @@ ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입�
 ├── aws-cache/                  루트 — elasticache
 ├── aws-ops/                    루트 — ECR · ops ALB
 ├── aws-db-bootstrap/           루트 — DB Secret · bootstrap IAM/Pod Identity
+├── gcp-cache/                  루트 — Memorystore for Valkey · PSC · endpoint Secret
 └── docs/specs/                 설계 문서
 ```
 
@@ -33,6 +34,7 @@ ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입�
 - EKS(`aws-eks`): Private Subnet에 Kubernetes 클러스터와 Managed Node Group을 생성합니다. VPC CNI, CoreDNS, kube-proxy, EBS CSI, Pod Identity Agent 애드온과 AWS Load Balancer Controller를 함께 설치합니다. IAM은 `eks-iam` 모듈이 별도로 담당합니다(클러스터 미참조 — [설계 문서 §6](docs/specs/2026-09-14-terraform-root-split-design.md) 참조).
 - RDS(`aws-rds`): DB Subnet에 암호화된 PostgreSQL Multi-AZ 인스턴스를 생성합니다. 인바운드 5432는 EKS 클러스터 보안 그룹이 아니라 **프라이빗 서브넷 CIDR**로 허용합니다(`aws-rds`가 `aws-eks`를 몰라도 되게 하는 설계 — 설계 문서 결정 3). Master 비밀번호는 AWS Secrets Manager에서 관리하고 백업·Performance Insights·Enhanced Monitoring을 활성화합니다.
 - ElastiCache(`aws-cache`): Private Subnet에 Serverless Valkey 캐시를 생성합니다. 접속 비밀번호는 무작위로 생성해 Secrets Manager에 저장하고 RBAC 사용자 그룹에 연결합니다.
+- Memorystore(`gcp-cache`): GCP VPC의 전용 PSC Subnet에 단일 샤드 Valkey를 생성하고 endpoint를 Secret Manager에 저장합니다.
 - State: 루트마다 별도 state key로 같은 S3 Bucket에 암호화 저장하며, `use_lockfile`(S3 네이티브 락)로 동시 실행을 방지합니다. 자세한 내용은 아래 "루트 구조" 절을 참조하세요.
 
 ## 주요 기본값
@@ -83,6 +85,7 @@ code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
 | `aws-cache` | `aws/cache/terraform.tfstate` | aws | core |
 | `aws-ops` | `aws/ops/terraform.tfstate` | aws | core |
 | `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | aws | eks · rds |
+| `gcp-cache` | `gcp/cache/terraform.tfstate` | google | gcp-core |
 
 `aws-ops` 는 ECR 과 ops ALB 를 갖는다. ALB 가 VPC·퍼블릭 서브넷을 필요로 하므로 core 를 읽는다.
 
@@ -113,3 +116,5 @@ Ingress 가 만든 ALB 는 Terraform state 에 없다. 먼저 치우지 않으�
     2. ALB · SG · 대상 그룹 소멸 확인
     3. terraform -chdir=aws-eks destroy
     4. terraform -chdir=aws-core destroy
+
+GCP는 `gcp-cache`를 `gcp-core`보다 먼저 삭제하고, 생성할 때는 `gcp-core` 다음에 적용한다.
