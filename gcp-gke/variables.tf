@@ -4,7 +4,7 @@ variable "gcp_project_id" {
 
 variable "region" {
   type    = string
-  default = "asia-northeast3"
+  default = "asia-northeast2"
 }
 
 # GKE 마스터에 접근을 허용할 대역. 운영자 IP 나 코드서버 IP 를 넣는다.

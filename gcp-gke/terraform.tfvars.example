@@ -1,0 +1,9 @@
+gcp_project_id = "kdt4-1-506106"
+region         = "asia-northeast2"
+
+master_authorized_cidrs = [
+  {
+    cidr_block   = "203.0.113.10/32"
+    display_name = "code-server"
+  }
+]

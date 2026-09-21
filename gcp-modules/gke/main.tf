@@ -49,6 +49,12 @@ resource "google_container_cluster" "main" {
     workload_pool = "${var.gcp_project_id}.svc.id.goog"
   }
 
+  # Secret Manager의 값을 Kubernetes Secret으로 동기화한다.
+  # 클러스터를 다시 만들어도 GitOps SecretSync 매니페스트가 그대로 동작해야 한다.
+  secret_manager_config {
+    enabled = true
+  }
+
   release_channel {
     channel = var.release_channel
   }
