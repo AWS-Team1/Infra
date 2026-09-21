@@ -1,144 +1,629 @@
-name: Terraform Apply
+name: AWS Terraform Apply
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "AWS 전체 인프라를 실제로 Terraform Apply"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: terraform-dev
+  group: terraform-aws-dev
   cancel-in-progress: false
 
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_VERSION: "1.16.2"
+
 jobs:
-  terraform-apply:
-    name: Terraform Apply
+  # =========================================================
+  # 0. PREFLIGHT
+  # - Terraform 포맷 검사
+  # - 실제 AWS 리소스는 건드리지 않는다.
+  # =========================================================
+  preflight:
+    name: Preflight
     runs-on: ubuntu-latest
-    environment: dev-infra
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # -------------------------------------------------
-      # AWS authentication
-      # -------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform version
+        shell: bash
+        run: terraform version
+
+      - name: Terraform format check
+        shell: bash
+        run: terraform fmt -check -recursive
+
+
+  # =========================================================
+  # 1. VALIDATE ALL ROOTS
+  # - backend 연결 없이 문법 / provider / module 구조 검증
+  # - 하나라도 실패하면 aws-core부터 실행되지 않는다.
+  # =========================================================
+  validate:
+    name: Validate - ${{ matrix.root }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        root:
+          - aws-core
+          - aws-rds
+          - aws-cache
+          - aws-ops
+          - aws-eks
+          - aws-db-bootstrap
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init - Backend Disabled
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init \
+            -backend=false \
+            -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform validate
+
+
+  # =========================================================
+  # 2. AWS CORE
+  # VPC / Subnet / IGW / NAT / Route Table
+  # S3 Endpoint / Route53 association / Bastion
+  # =========================================================
+  aws-core:
+    name: AWS Core
+    needs: validate
+    if: ${{ inputs.confirm == true }}
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
 
-      - name: Verify AWS account
+      - name: Verify AWS identity
         shell: bash
         run: |
           set -euo pipefail
 
-          ACCOUNT_ID="$(aws sts get-caller-identity \
-            --query Account \
-            --output text)"
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
 
-          echo "AWS account: ${ACCOUNT_ID}"
+          echo "AWS Account: ${ACCOUNT_ID}"
+          aws sts get-caller-identity
 
-          if [ "${ACCOUNT_ID}" != "769413326616" ]; then
-            echo "Unexpected AWS account: ${ACCOUNT_ID}"
-            exit 1
-          fi
+          test "${ACCOUNT_ID}" = "769413326616"
 
-      # -------------------------------------------------
-      # GCP authentication
-      # -------------------------------------------------
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v3
+      - name: AWS Core - Init
+        working-directory: aws-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
 
-      - name: Verify GCP project
+      - name: AWS Core - Plan
+        working-directory: aws-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: AWS Core - Show Plan
+        working-directory: aws-core
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: AWS Core - Apply
+        working-directory: aws-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: AWS Core - Outputs
+        working-directory: aws-core
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 3. AWS RDS
+  # aws-core state 필요
+  # =========================================================
+  aws-rds:
+    name: AWS RDS
+    needs: aws-core
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
         shell: bash
         run: |
           set -euo pipefail
 
-          gcloud config set project "${{ vars.GCP_PROJECT_ID }}"
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
 
-          PROJECT_ID="$(gcloud config get-value project)"
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
 
-          echo "GCP project: ${PROJECT_ID}"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-          if [ "${PROJECT_ID}" != "kdt4-1-506106" ]; then
-            echo "Unexpected GCP project: ${PROJECT_ID}"
-            exit 1
-          fi
+      - name: AWS RDS - Init
+        working-directory: aws-rds
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
 
-      # -------------------------------------------------
-      # GitHub-hosted runner public IP
-      # -------------------------------------------------
+      - name: AWS RDS - Plan
+        working-directory: aws-rds
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: AWS RDS - Show Plan
+        working-directory: aws-rds
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: AWS RDS - Apply
+        working-directory: aws-rds
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: AWS RDS - Outputs
+        working-directory: aws-rds
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 4. AWS CACHE
+  # aws-core state 필요
+  # =========================================================
+  aws-cache:
+    name: AWS Cache
+    needs: aws-rds
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: AWS Cache - Init
+        working-directory: aws-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: AWS Cache - Plan
+        working-directory: aws-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: AWS Cache - Show Plan
+        working-directory: aws-cache
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: AWS Cache - Apply
+        working-directory: aws-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: AWS Cache - Outputs
+        working-directory: aws-cache
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 5. AWS OPS
+  # ECR / Ops ALB / Route53
+  # =========================================================
+  aws-ops:
+    name: AWS Ops
+    needs: aws-cache
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: AWS Ops - Init
+        working-directory: aws-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: AWS Ops - Plan
+        working-directory: aws-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: AWS Ops - Show Plan
+        working-directory: aws-ops
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: AWS Ops - Apply
+        working-directory: aws-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: AWS Ops - Outputs
+        working-directory: aws-ops
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 6. AWS EKS
+  #
+  # GitHub-hosted Runner는 실행마다 공인 IP가 달라진다.
+  # 이 Job의 Runner IP를 감지하여 EKS Public API에 /32로 허용한다.
+  #
+  # Plan과 Apply를 반드시 같은 Job에서 실행한다.
+  # =========================================================
+  aws-eks:
+    name: AWS EKS
+    needs: aws-ops
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
       - name: Detect runner public IP
         shell: bash
         run: |
           set -euo pipefail
 
-          RUNNER_IP="$(curl -fsS https://checkip.amazonaws.com | tr -d '\n')"
+          RUNNER_IP="$(
+            curl -fsS https://checkip.amazonaws.com |
+            tr -d '[:space:]'
+          )"
 
           if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            echo "Invalid runner public IP: ${RUNNER_IP}"
+            echo "Invalid runner IP: ${RUNNER_IP}"
             exit 1
           fi
 
-          echo "Runner public IP: ${RUNNER_IP}"
+          echo "GitHub Runner public IP: ${RUNNER_IP}"
 
-          echo "RUNNER_PUBLIC_IP=${RUNNER_IP}" >> "$GITHUB_ENV"
+          echo "RUNNER_PUBLIC_IP=${RUNNER_IP}" >> "${GITHUB_ENV}"
+          echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" >> "${GITHUB_ENV}"
 
-          echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" \
-            >> "$GITHUB_ENV"
-
-          echo "TF_VAR_master_authorized_cidrs=[{\"cidr_block\":\"${RUNNER_IP}/32\",\"display_name\":\"github-actions\"}]" \
-            >> "$GITHUB_ENV"
-
-      - name: Verify Terraform network variables
+      - name: Verify EKS access variable
         shell: bash
         run: |
           set -euo pipefail
 
           echo "Runner IP: ${RUNNER_PUBLIC_IP}"
-          echo "EKS CIDRs: ${TF_VAR_public_access_cidrs}"
-          echo "GKE CIDRs: ${TF_VAR_master_authorized_cidrs}"
+          echo "EKS Public Access CIDRs: ${TF_VAR_public_access_cidrs}"
 
-      # -------------------------------------------------
-      # Terraform
-      # -------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.10.5"
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Terraform version
-        run: terraform version
-
-      - name: AWS Core - Init
-        working-directory: aws-core
-        run: terraform init -input=false
-
-      - name: AWS Core - Validate
-        working-directory: aws-core
-        run: terraform validate
-
-      - name: AWS Core - Plan
-        working-directory: aws-core
+      - name: AWS EKS - Init
+        working-directory: aws-eks
+        shell: bash
         run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: AWS EKS - Plan
+        working-directory: aws-eks
+        shell: bash
+        run: |
+          set -euo pipefail
           terraform plan \
             -input=false \
+            -lock-timeout=5m \
             -out=tfplan
 
-      - name: AWS Core - Show Plan
-        working-directory: aws-core
+      - name: AWS EKS - Show Plan
+        working-directory: aws-eks
+        shell: bash
         run: terraform show -no-color tfplan
 
-      - name: AWS Core - Apply
-        working-directory: aws-core
-        run: terraform apply -input=false -auto-approve tfplan
+      - name: AWS EKS - Apply
+        working-directory: aws-eks
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: AWS EKS - Outputs
+        working-directory: aws-eks
+        shell: bash
+        run: terraform output
+
+      - name: Verify EKS cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws eks describe-cluster \
+            --name boa-eks \
+            --region "${{ vars.AWS_REGION }}" \
+            --query 'cluster.{Name:name,Status:status,Version:version,Endpoint:endpoint}'
+
+
+  # =========================================================
+  # 7. AWS DB BOOTSTRAP INFRA
+  #
+  # RDS + EKS state가 모두 존재해야 한다.
+  # 실제 Kubernetes DB Bootstrap Job을 실행하는 단계가 아니라
+  # Secrets Manager / IAM / Pod Identity 연결을 생성한다.
+  # =========================================================
+  aws-db-bootstrap:
+    name: AWS DB Bootstrap
+    needs: aws-eks
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: AWS DB Bootstrap - Init
+        working-directory: aws-db-bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: AWS DB Bootstrap - Plan
+        working-directory: aws-db-bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: AWS DB Bootstrap - Show Plan
+        working-directory: aws-db-bootstrap
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: AWS DB Bootstrap - Apply
+        working-directory: aws-db-bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: AWS DB Bootstrap - Outputs
+        working-directory: aws-db-bootstrap
+        shell: bash
+        run: terraform output
         
