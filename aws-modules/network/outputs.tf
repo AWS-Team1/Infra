@@ -1,13 +1,17 @@
 output "vpc_id" {
-  value = data.aws_vpc.main.id
+  value = aws_vpc.main.id
 }
 
 output "vpc_cidr" {
-  value = data.aws_vpc.main.cidr_block
+  value = aws_vpc.main.cidr_block
 }
 
 output "igw_id" {
   value = aws_internet_gateway.main.id
+}
+
+output "s3_gateway_endpoint_id" {
+  value = aws_vpc_endpoint.s3.id
 }
 
 output "public_subnet_ids" {
@@ -31,7 +35,6 @@ output "db_subnet_ids" {
   ]
 }
 
-# aws-cache 가 ElastiCache 서브넷 그룹을 만드는 데 쓴다.
 output "cache_subnet_ids" {
   value = [
     aws_subnet.cache_a.id,
@@ -39,7 +42,6 @@ output "cache_subnet_ids" {
   ]
 }
 
-# rds / elasticache 가 SG 인바운드를 CIDR 로 여는 데 쓴다.
 output "private_subnet_cidrs" {
   value = [
     aws_subnet.private_a.cidr_block,

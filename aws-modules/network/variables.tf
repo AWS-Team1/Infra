@@ -3,16 +3,18 @@ variable "project_name" {
   type        = string
 }
 
-# Karpenter 서브넷 탐색 태그(karpenter.sh/discovery)에 들어갈 값.
-# eks 모듈의 cluster_name 과 반드시 같아야 한다.
 variable "cluster_name" {
   description = "EKS cluster name used for karpenter.sh/discovery tag"
   type        = string
 }
 
-# 기존 VPC를 재사용한다. 이 모듈은 VPC를 생성하지 않는다.
-variable "vpc_id" {
-  description = "재사용할 기존 VPC ID"
+variable "vpc_cidr" {
+  description = "boa-vpc IPv4 CIDR"
+  type        = string
+}
+
+variable "region" {
+  description = "AWS region"
   type        = string
 }
 
@@ -32,7 +34,6 @@ variable "db_subnet_cidrs" {
   type = list(string)
 }
 
-# ElastiCache 전용. 라우팅 테이블을 붙이지 않아 외부로 나가지 않는다.
 variable "cache_subnet_cidrs" {
   type = list(string)
 }
