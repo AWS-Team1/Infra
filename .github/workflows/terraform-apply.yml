@@ -137,4 +137,8 @@ jobs:
       - name: AWS Core - Show Plan
         working-directory: aws-core
         run: terraform show -no-color tfplan
+
+      - name: AWS Core - Apply
+        working-directory: aws-core
+        run: terraform apply -input=false -auto-approve tfplan
         
