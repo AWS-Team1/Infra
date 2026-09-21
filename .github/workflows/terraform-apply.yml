@@ -107,4 +107,34 @@ jobs:
           echo "Runner IP: ${RUNNER_PUBLIC_IP}"
           echo "EKS CIDRs: ${TF_VAR_public_access_cidrs}"
           echo "GKE CIDRs: ${TF_VAR_master_authorized_cidrs}"
-          
+
+      # -------------------------------------------------
+      # Terraform
+      # -------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Terraform version
+        run: terraform version
+
+      - name: AWS Core - Init
+        working-directory: aws-core
+        run: terraform init -input=false
+
+      - name: AWS Core - Validate
+        working-directory: aws-core
+        run: terraform validate
+
+      - name: AWS Core - Plan
+        working-directory: aws-core
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan
+
+      - name: AWS Core - Show Plan
+        working-directory: aws-core
+        run: terraform show -no-color tfplan
+        
