@@ -1,0 +1,582 @@
+name: GCP Terraform Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "GCP 전체 인프라를 실제로 Terraform Apply"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-gcp-dev
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_VERSION: "1.16.2"
+
+jobs:
+  # =========================================================
+  # 0. PREFLIGHT
+  # =========================================================
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform version
+        shell: bash
+        run: terraform version
+
+      - name: Terraform format check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for dir in \
+            gcp-core \
+            gcp-cloudsql \
+            gcp-ops \
+            gcp-gke \
+            gcp-modules
+          do
+            terraform fmt -check -recursive "${dir}"
+          done
+
+
+  # =========================================================
+  # 1. VALIDATE ALL GCP ROOTS
+  #
+  # 실제 Cloud 리소스에는 접근하지 않는다.
+  # 모든 root가 유효해야 실제 Apply 시작.
+  # =========================================================
+  validate:
+    name: Validate - ${{ matrix.root }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        root:
+          - gcp-core
+          - gcp-cloudsql
+          - gcp-ops
+          - gcp-gke
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init - Backend Disabled
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform init \
+            -backend=false \
+            -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform validate
+
+
+  # =========================================================
+  # 2. GCP CORE
+  #
+  # VPC / Subnet
+  # GKE Pod/Service secondary CIDR
+  # PSA
+  # Cloud Router / NAT
+  # Firewall
+  # =========================================================
+  gcp-core:
+    name: GCP Core
+    needs: validate
+    if: ${{ inputs.confirm == true }}
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 40
+
+    env:
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # S3 Terraform backend 인증
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      # GCP Terraform Provider 인증
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify GCP identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Active GCP account:"
+          gcloud auth list \
+            --filter=status:ACTIVE \
+            --format="value(account)"
+
+          echo "Configured project:"
+          gcloud config set project "${{ vars.GCP_PROJECT_ID }}"
+          gcloud config get-value project
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: GCP Core - Init
+        working-directory: gcp-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: GCP Core - Plan
+        working-directory: gcp-core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: GCP Core - Show Plan
+        working-directory: gcp-core
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: GCP Core - Apply
+        working-directory: gcp-core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: GCP Core - Outputs
+        working-directory: gcp-core
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 3. GCP CLOUD SQL
+  #
+  # gcp-core state 필요
+  #
+  # Cloud SQL PostgreSQL
+  # accountsdb / ledgerdb
+  # dms_writer
+  # accounts_app / ledger_app
+  # Secret Manager
+  # Private DNS
+  # =========================================================
+  gcp-cloudsql:
+    name: GCP Cloud SQL
+    needs: gcp-core
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 90
+
+    env:
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION }}
+
+      # GitHub Environment Secret
+      TF_VAR_dms_password: ${{ secrets.GCP_DMS_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Verify required secret
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TF_VAR_dms_password:-}" ]; then
+            echo "GCP_DMS_PASSWORD Environment Secret is missing."
+            exit 1
+          fi
+
+          echo "GCP_DMS_PASSWORD is configured."
+
+      - name: GCP Cloud SQL - Init
+        working-directory: gcp-cloudsql
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: GCP Cloud SQL - Plan
+        working-directory: gcp-cloudsql
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: GCP Cloud SQL - Show Plan
+        working-directory: gcp-cloudsql
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: GCP Cloud SQL - Apply
+        working-directory: gcp-cloudsql
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: GCP Cloud SQL - Outputs
+        working-directory: gcp-cloudsql
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 4. GCP OPS
+  #
+  # GCP ArgoCD Global IP
+  # AWS Route53:
+  # argocd-gcp.bespinglobal.site
+  #
+  # 따라서 GCP + AWS 인증 둘 다 필요
+  # =========================================================
+  gcp-ops:
+    name: GCP Ops
+    needs: gcp-cloudsql
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 40
+
+    env:
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: GCP Ops - Init
+        working-directory: gcp-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: GCP Ops - Plan
+        working-directory: gcp-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: GCP Ops - Show Plan
+        working-directory: gcp-ops
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: GCP Ops - Apply
+        working-directory: gcp-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: GCP Ops - Outputs
+        working-directory: gcp-ops
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 5. GCP GKE
+  #
+  # gcp-core state 필요
+  #
+  # GitHub-hosted Runner는 Job마다 공인 IP가 달라진다.
+  # 현재 Job Runner IP를 GKE Master Authorized Networks에
+  # /32로 전달한다.
+  # =========================================================
+  gcp-gke:
+    name: GCP GKE
+    needs: gcp-ops
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 90
+
+    env:
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "769413326616"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Detect runner public IP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNNER_IP="$(
+            curl -fsS https://checkip.amazonaws.com |
+            tr -d '[:space:]'
+          )"
+
+          if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "Invalid runner IP: ${RUNNER_IP}"
+            exit 1
+          fi
+
+          echo "GitHub Runner public IP: ${RUNNER_IP}"
+
+          echo "RUNNER_PUBLIC_IP=${RUNNER_IP}" >> "${GITHUB_ENV}"
+
+          echo 'TF_VAR_master_authorized_cidrs=[{"cidr_block":"'"${RUNNER_IP}"'/32","display_name":"github-actions"}]' \
+            >> "${GITHUB_ENV}"
+
+      - name: Verify GKE access variable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Runner IP: ${RUNNER_PUBLIC_IP}"
+          echo "GKE Master Authorized CIDRs:"
+          echo "${TF_VAR_master_authorized_cidrs}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: GCP GKE - Init
+        working-directory: gcp-gke
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: GCP GKE - Plan
+        working-directory: gcp-gke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: GCP GKE - Show Plan
+        working-directory: gcp-gke
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: GCP GKE - Apply
+        working-directory: gcp-gke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: GCP GKE - Outputs
+        working-directory: gcp-gke
+        shell: bash
+        run: terraform output
+
+      - name: Verify GKE cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gcloud container clusters describe boa-gke \
+            --region "${{ vars.GCP_REGION }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --format="table(name,status,currentMasterVersion,currentNodeVersion)"
+            

@@ -504,6 +504,51 @@ jobs:
           set -euo pipefail
           terraform init -input=false
 
+            - name: Adopt preserved JWT secrets
+        working-directory: aws-eks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          adopt_secret() {
+            RESOURCE_ADDRESS="$1"
+            SECRET_NAME="$2"
+
+            if terraform state list | grep -Fxq "${RESOURCE_ADDRESS}"; then
+              echo "${SECRET_NAME} is already managed by Terraform."
+              return
+            fi
+
+            SECRET_ARN="$(
+              aws secretsmanager describe-secret \
+                --secret-id "${SECRET_NAME}" \
+                --query ARN \
+                --output text \
+                2>/dev/null || true
+            )"
+
+            if [[ -n "${SECRET_ARN}" && "${SECRET_ARN}" != "None" ]]; then
+              echo "Existing secret found: ${SECRET_NAME}"
+              echo "Importing into Terraform state..."
+
+              terraform import \
+                -input=false \
+                "${RESOURCE_ADDRESS}" \
+                "${SECRET_ARN}"
+            else
+              echo "${SECRET_NAME} does not exist."
+              echo "Terraform will create it."
+            fi
+          }
+
+          adopt_secret \
+            'module.eks.aws_secretsmanager_secret.jwt_public' \
+            '/boa/jwt/public'
+
+          adopt_secret \
+            'module.eks.aws_secretsmanager_secret.jwt_private' \
+            '/boa/jwt/private'
+
       - name: AWS EKS - Plan
         working-directory: aws-eks
         shell: bash
@@ -569,7 +614,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-          allowed-account-ids: "769413326616"
+
 
       - name: Verify AWS identity
         shell: bash
@@ -626,4 +671,3 @@ jobs:
         working-directory: aws-db-bootstrap
         shell: bash
         run: terraform output
-        
