@@ -132,16 +132,16 @@ jobs:
           BLOCKED=0
 
           DMS_INSTANCE="$(
-           aws dms describe-replication-instances \
-             --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" \
-             --output text
+            aws dms describe-replication-instances \
+              --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" \
+              --output text
           )"
-          
+
           DMS_SUBNET_GROUP="$(
-           aws dms describe-replication-subnet-groups \
-             --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" \
-            --output text
-            )"
+            aws dms describe-replication-subnet-groups \
+              --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" \
+              --output text
+          )"
 
           if [[ -n "${DMS_INSTANCE}" || -n "${DMS_SUBNET_GROUP}" ]]; then
             echo "AWS DMS resources still exist."
@@ -170,6 +170,176 @@ jobs:
 
 
   # =========================================================
+  # PRE-FLIGHT
+  #
+  # 실제 리소스를 지우기 전에 모든 Terraform destroy plan을
+  # 한 번 dry-run 해 필수 변수/구문/remote-state/data-source 문제를
+  # 최대한 앞에서 잡는다.
+  #
+  # aws-db-bootstrap은 Secret/IAM을 보존하므로
+  # Pod Identity Association만 targeted plan 한다.
+  # =========================================================
+  preflight:
+    name: Terraform Destroy Preflight
+    needs: guard
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID="$(
+            aws sts get-caller-identity \
+              --query Account \
+              --output text
+          )"
+
+          echo "AWS Account: ${ACCOUNT_ID}"
+          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Prepare required EKS Terraform input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNNER_IP="$(
+            curl -fsS https://checkip.amazonaws.com |
+            tr -d '[:space:]'
+          )"
+
+          if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "Invalid runner IP: ${RUNNER_IP}"
+            exit 1
+          fi
+
+          echo "Preflight runner IP: ${RUNNER_IP}"
+
+          echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" \
+            >> "${GITHUB_ENV}"
+
+      - name: Preflight DB Bootstrap association destroy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform -chdir=aws-db-bootstrap init -input=false
+
+          ADDRESS='aws_eks_pod_identity_association.db_bootstrap'
+
+          if terraform -chdir=aws-db-bootstrap state list |
+            grep -Fxq "${ADDRESS}"
+          then
+            terraform -chdir=aws-db-bootstrap plan \
+              -destroy \
+              -input=false \
+              -lock-timeout=5m \
+              -target="${ADDRESS}" \
+              -out=/tmp/aws-db-bootstrap-preflight.tfplan
+          else
+            echo "DB bootstrap Pod Identity association is not in state."
+          fi
+
+      - name: Preflight EKS destroy
+        working-directory: aws-eks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform init -input=false
+
+          terraform plan \
+            -destroy \
+            -input=false \
+            -lock-timeout=5m \
+            -target=module.eks \
+            -target=module.eks_iam \
+            -target=module.aws_load_balancer_controller.aws_eks_pod_identity_association.this \
+            -target=module.aws_load_balancer_controller.aws_iam_role_policy_attachment.this \
+            -target=module.aws_load_balancer_controller.aws_iam_policy.this \
+            -target=module.aws_load_balancer_controller.aws_iam_role.this \
+            -out=/tmp/aws-eks-preflight.tfplan
+
+      - name: Preflight AWS Ops destroy
+        working-directory: aws-ops
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform init -input=false
+
+          if [[ "${{ inputs.delete_ecr }}" == "true" ]]; then
+            terraform plan \
+              -destroy \
+              -input=false \
+              -lock-timeout=5m \
+              -out=/tmp/aws-ops-preflight.tfplan
+          else
+            terraform plan \
+              -destroy \
+              -input=false \
+              -lock-timeout=5m \
+              -target=module.ops_alb \
+              -target=aws_route53_record.argocd \
+              -out=/tmp/aws-ops-preflight.tfplan
+          fi
+
+      - name: Preflight AWS Cache destroy
+        working-directory: aws-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+          terraform plan \
+            -destroy \
+            -input=false \
+            -lock-timeout=5m \
+            -out=/tmp/aws-cache-preflight.tfplan
+
+      - name: Preflight AWS RDS destroy
+        working-directory: aws-rds
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+          terraform plan \
+            -destroy \
+            -input=false \
+            -lock-timeout=5m \
+            -out=/tmp/aws-rds-preflight.tfplan
+
+      - name: Preflight AWS Core destroy
+        working-directory: aws-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+          terraform plan \
+            -destroy \
+            -input=false \
+            -lock-timeout=5m \
+            -out=/tmp/aws-core-preflight.tfplan
+
+
+  # =========================================================
   # 1. EKS PRE-CLEAN + DESTROY
   #
   # 같은 GitHub Runner에서 전부 수행한다.
@@ -187,7 +357,9 @@ jobs:
   # =========================================================
   eks-teardown:
     name: EKS Pre-clean and Destroy
-    needs: guard
+    needs:
+      - guard
+      - preflight
 
     runs-on: ubuntu-latest
     environment: dev-infra
@@ -221,6 +393,27 @@ jobs:
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
 
+      - name: Detect runner public IP and set EKS Terraform input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNNER_IP="$(
+            curl -fsS https://checkip.amazonaws.com |
+            tr -d '[:space:]'
+          )"
+
+          if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "Invalid runner IP: ${RUNNER_IP}"
+            exit 1
+          fi
+
+          echo "Runner IP: ${RUNNER_IP}"
+
+          echo "RUNNER_PUBLIC_IP=${RUNNER_IP}" >> "${GITHUB_ENV}"
+          echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" \
+            >> "${GITHUB_ENV}"
+
       - name: Detect EKS cluster
         id: eks
         shell: bash
@@ -246,17 +439,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          RUNNER_IP="$(
-            curl -fsS https://checkip.amazonaws.com |
-            tr -d '[:space:]'
-          )"
-
-          if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            echo "Invalid runner IP: ${RUNNER_IP}"
-            exit 1
-          fi
-
-          echo "Runner IP: ${RUNNER_IP}"
+          DESIRED_CIDR="${RUNNER_PUBLIC_IP}/32"
 
           CURRENT_CIDRS="$(
             aws eks describe-cluster \
@@ -266,7 +449,7 @@ jobs:
               --output text
           )"
 
-          if grep -qw "${RUNNER_IP}/32" <<< "${CURRENT_CIDRS}"; then
+          if grep -qw "${DESIRED_CIDR}" <<< "${CURRENT_CIDRS}"; then
             echo "Current runner is already allowed."
           else
             UPDATE_ID="$(
@@ -274,7 +457,7 @@ jobs:
                 --name boa-eks \
                 --region "${AWS_REGION_FIXED}" \
                 --resources-vpc-config \
-                  "{\"endpointPublicAccess\":true,\"endpointPrivateAccess\":true,\"publicAccessCidrs\":[\"${RUNNER_IP}/32\"]}" \
+                  "{\"endpointPublicAccess\":true,\"endpointPrivateAccess\":true,\"publicAccessCidrs\":[\"${DESIRED_CIDR}\"]}" \
                 --query 'update.id' \
                 --output text
             )"
@@ -707,17 +890,22 @@ jobs:
 
             fi
 
-            IMAGE_IDS="$(
-              aws ecr list-images \
-                --repository-name "${REPO}" \
-                --region "${AWS_REGION_FIXED}" \
-                --query 'imageIds' \
-                --output json
-            )"
+            while :; do
 
-            if [[ "$(jq 'length' <<< "${IMAGE_IDS}")" -gt 0 ]]; then
+              IMAGE_IDS="$(
+                aws ecr list-images \
+                  --repository-name "${REPO}" \
+                  --region "${AWS_REGION_FIXED}" \
+                  --query 'imageIds[:100]' \
+                  --output json
+              )"
 
-              echo "${REPO}: deleting images."
+              if [[ "$(jq 'length' <<< "${IMAGE_IDS}")" -eq 0 ]]; then
+                echo "${REPO}: no images remain."
+                break
+              fi
+
+              echo "${REPO}: deleting up to 100 images."
 
               aws ecr batch-delete-image \
                 --repository-name "${REPO}" \
@@ -725,11 +913,7 @@ jobs:
                 --image-ids "${IMAGE_IDS}" \
                 >/dev/null
 
-            else
-
-              echo "${REPO}: no images."
-
-            fi
+            done
 
           done
 
@@ -997,15 +1181,13 @@ jobs:
 
           DMS_INSTANCE="$(
             aws dms describe-replication-instances \
-              --filters Name=replication-instance-id,Values=boa-dms \
-              --query 'ReplicationInstances[].ReplicationInstanceIdentifier' \
+              --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" \
               --output text
           )"
 
           DMS_SUBNET_GROUP="$(
             aws dms describe-replication-subnet-groups \
-              --filters Name=replication-subnet-group-id,Values=boa-dms-subnet-group \
-              --query 'ReplicationSubnetGroups[].ReplicationSubnetGroupIdentifier' \
+              --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" \
               --output text
           )"
 
@@ -1205,6 +1387,36 @@ jobs:
               echo "OK: ${ORIGINAL_VPC_ID} absent."
 
             fi
+
+          fi
+
+
+          # -------------------------
+          # ECR (delete_ecr=true일 때)
+          # -------------------------
+          if [[ "${{ inputs.delete_ecr }}" == "true" ]]; then
+
+            for REPO in \
+              boa-frontend \
+              boa-userservice \
+              boa-contacts \
+              boa-balancereader \
+              boa-ledgerwriter \
+              boa-transactionhistory
+            do
+
+              if aws ecr describe-repositories \
+                --repository-names "${REPO}" \
+                --region "${AWS_REGION_FIXED}" \
+                >/dev/null 2>&1
+              then
+                echo "ERROR: ECR repository still exists: ${REPO}"
+                FAILED=1
+              else
+                echo "OK: ECR repository absent: ${REPO}"
+              fi
+
+            done
 
           fi
 
