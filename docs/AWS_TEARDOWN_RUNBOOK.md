@@ -1,6 +1,6 @@
 # AWS 전체 철거 런북
 
-이 문서는 Bank of Anthos AWS 환경을 내리고 다시 Terraform으로 만들 수 있도록 정리한 절차다. 명령은 저장소 루트에서 실행한다.
+이 문서는 Bank of Anthos AWS 환경을 내리고 다시 Terraform으로 만들 수 있도록 정리한 절차다. Windows에서는 SSH 접속만 하고, 나머지 명령은 모두 Code Server의 bash에서 Infra 저장소 루트를 기준으로 실행한다.
 
 ## 0. 삭제 범위
 
@@ -32,7 +32,6 @@
 | 항목 | 값 |
 |---|---|
 | AWS 계정 | `769413326616` |
-| AWS CLI profile | `team1` |
 | AWS region | `ap-northeast-2` |
 | Terraform state bucket | `boa-terraform-state-6416` |
 | 기존 VPC | `vpc-0a36febf3057e5da0` |
@@ -44,15 +43,17 @@
 | private hosted zone | `Z056721513V17DUDMWKXV` |
 | ACM certificate | `arn:aws:acm:ap-northeast-2:769413326616:certificate/1c81ee2e-edbc-4a42-961d-816d571767ab` |
 
-PowerShell에서 Terraform이 사용할 profile을 지정한다.
+Code Server에 연결된 EC2 IAM role을 사용한다. 별도 AWS CLI profile은 지정하지 않는다.
 
-```powershell
-$env:AWS_PROFILE = "team1"
+```bash
+export AWS_REGION=ap-northeast-2
+export AWS_DEFAULT_REGION=ap-northeast-2
+aws sts get-caller-identity
 ```
 
 목적: Terraform과 AWS CLI가 올바른 계정을 사용하게 한다.
 
-예상 결과: `aws sts get-caller-identity --profile team1`의 `Account`가 `769413326616`이다.
+예상 결과: `Account`가 `769413326616`이다.
 
 ## 2. ArgoCD와 Karpenter 중지
 
@@ -97,7 +98,7 @@ kubectl get nodeclaim
 
 먼저 state 유무를 확인한다.
 
-```powershell
+```bash
 terraform -chdir=aws-dms init -reconfigure
 terraform -chdir=aws-dms state list
 ```
@@ -106,38 +107,38 @@ terraform -chdir=aws-dms state list
 
 예상 결과: state에 DMS 리소스가 있으면 다음 명령으로 제거한다.
 
-```powershell
+```bash
 terraform -chdir=aws-dms destroy
 ```
 
 state가 비었거나 콘솔에서 만든 DMS라면 아래 CLI 절차를 사용한다. ARN은 조회 결과를 복사한다.
 
-```powershell
-aws dms describe-replication-tasks --profile team1 --region ap-northeast-2 --query "ReplicationTasks[].{Id:ReplicationTaskIdentifier,Status:Status,Arn:ReplicationTaskArn}" --output table
-aws dms stop-replication-task --profile team1 --region ap-northeast-2 --replication-task-arn <TASK_ARN>
-aws dms delete-replication-task --profile team1 --region ap-northeast-2 --replication-task-arn <TASK_ARN>
+```bash
+aws dms describe-replication-tasks --region ap-northeast-2 --query "ReplicationTasks[].{Id:ReplicationTaskIdentifier,Status:Status,Arn:ReplicationTaskArn}" --output table
+aws dms stop-replication-task --region ap-northeast-2 --replication-task-arn <TASK_ARN>
+aws dms delete-replication-task --region ap-northeast-2 --replication-task-arn <TASK_ARN>
 ```
 
 목적: CDC task를 먼저 중지하고 삭제한다. 이미 `failed` 또는 `stopped`이면 stop은 생략한다.
 
 예상 결과: `describe-replication-tasks` 결과가 빈 배열이 된다.
 
-```powershell
-aws dms describe-endpoints --profile team1 --region ap-northeast-2 --query "Endpoints[].{Id:EndpointIdentifier,Arn:EndpointArn}" --output table
-aws dms delete-endpoint --profile team1 --region ap-northeast-2 --endpoint-arn <ENDPOINT_ARN>
+```bash
+aws dms describe-endpoints --region ap-northeast-2 --query "Endpoints[].{Id:EndpointIdentifier,Arn:EndpointArn}" --output table
+aws dms delete-endpoint --region ap-northeast-2 --endpoint-arn <ENDPOINT_ARN>
 
-aws dms describe-replication-instances --profile team1 --region ap-northeast-2 --query "ReplicationInstances[].{Id:ReplicationInstanceIdentifier,Status:ReplicationInstanceStatus,Arn:ReplicationInstanceArn}" --output table
-aws dms delete-replication-instance --profile team1 --region ap-northeast-2 --replication-instance-arn <INSTANCE_ARN>
-aws dms wait replication-instance-deleted --profile team1 --region ap-northeast-2 --replication-instance-arn <INSTANCE_ARN>
+aws dms describe-replication-instances --region ap-northeast-2 --query "ReplicationInstances[].{Id:ReplicationInstanceIdentifier,Status:ReplicationInstanceStatus,Arn:ReplicationInstanceArn}" --output table
+aws dms delete-replication-instance --region ap-northeast-2 --replication-instance-arn <INSTANCE_ARN>
+aws dms wait replication-instance-deleted --region ap-northeast-2 --replication-instance-arn <INSTANCE_ARN>
 ```
 
 목적: endpoint와 replication instance를 제거한다.
 
 예상 결과: endpoint와 instance 조회 결과가 빈 배열이다.
 
-```powershell
-aws dms describe-replication-subnet-groups --profile team1 --region ap-northeast-2 --query "ReplicationSubnetGroups[].ReplicationSubnetGroupIdentifier" --output table
-aws dms delete-replication-subnet-group --profile team1 --region ap-northeast-2 --replication-subnet-group-identifier <SUBNET_GROUP_ID>
+```bash
+aws dms describe-replication-subnet-groups --region ap-northeast-2 --query "ReplicationSubnetGroups[].ReplicationSubnetGroupIdentifier" --output table
+aws dms delete-replication-subnet-group --region ap-northeast-2 --replication-subnet-group-identifier <SUBNET_GROUP_ID>
 ```
 
 목적: instance 삭제 후 남은 DMS subnet group을 제거한다.
@@ -148,7 +149,7 @@ aws dms delete-replication-subnet-group --profile team1 --region ap-northeast-2 
 
 DB Secrets와 bootstrap IAM은 다음 재배포에 재사용하므로 전체 destroy하지 않는다.
 
-```powershell
+```bash
 terraform -chdir=aws-db-bootstrap init -reconfigure
 terraform -chdir=aws-db-bootstrap destroy -target=aws_eks_pod_identity_association.db_bootstrap
 ```
@@ -161,7 +162,7 @@ terraform -chdir=aws-db-bootstrap destroy -target=aws_eks_pod_identity_associati
 
 현재 JWT secret container가 `aws-eks` state에 있으므로 그대로 destroy하면 Secret도 삭제된다. 삭제 전에 state에서만 분리한다.
 
-```powershell
+```bash
 terraform -chdir=aws-eks init -reconfigure
 terraform -chdir=aws-eks state rm module.eks.aws_secretsmanager_secret.jwt_private module.eks.aws_secretsmanager_secret.jwt_public
 ```
@@ -172,14 +173,20 @@ terraform -chdir=aws-eks state rm module.eks.aws_secretsmanager_secret.jwt_priva
 
 클러스터 내부 객체는 EKS 삭제와 함께 사라지므로 API/Helm 조회가 destroy를 막을 때만 state에서 분리한다.
 
-```powershell
+```bash
 terraform -chdir=aws-eks state rm kubernetes_cluster_role_binding_v1.secrets_store_sync kubernetes_cluster_role_v1.secrets_store_sync module.aws_load_balancer_controller.helm_release.this module.aws_load_balancer_controller.kubernetes_service_account_v1.this
 ```
 
 AWS 리소스만 대상으로 EKS를 삭제한다.
 
-```powershell
-terraform -chdir=aws-eks destroy -target=module.eks -target=module.eks_iam -target=module.aws_load_balancer_controller.aws_eks_pod_identity_association.this -target=module.aws_load_balancer_controller.aws_iam_role_policy_attachment.this -target=module.aws_load_balancer_controller.aws_iam_policy.this -target=module.aws_load_balancer_controller.aws_iam_role.this
+```bash
+terraform -chdir=aws-eks destroy \
+  -target=module.eks \
+  -target=module.eks_iam \
+  -target=module.aws_load_balancer_controller.aws_eks_pod_identity_association.this \
+  -target=module.aws_load_balancer_controller.aws_iam_role_policy_attachment.this \
+  -target=module.aws_load_balancer_controller.aws_iam_policy.this \
+  -target=module.aws_load_balancer_controller.aws_iam_role.this
 ```
 
 목적: Helm cache와 로컬 EKS API 접근 여부에 영향받지 않고 EKS 및 관련 AWS IAM을 제거한다.
@@ -188,14 +195,14 @@ terraform -chdir=aws-eks destroy -target=module.eks -target=module.eks_iam -targ
 
 > 재구축 때는 `aws-core` apply 후 `aws-eks` apply 전에 보존한 JWT Secret을 import해야 한다. 장기적으로는 JWT Secret을 `aws-db-bootstrap` 같은 영속 root로 옮기는 것이 더 단순하다.
 
-```powershell
+```bash
 terraform -chdir=aws-eks import module.eks.aws_secretsmanager_secret.jwt_private <PRIVATE_SECRET_ARN>
 terraform -chdir=aws-eks import module.eks.aws_secretsmanager_secret.jwt_public <PUBLIC_SECRET_ARN>
 ```
 
 ## 6. RDS와 ElastiCache 삭제
 
-```powershell
+```bash
 terraform -chdir=aws-rds init -reconfigure
 terraform -chdir=aws-rds destroy
 
@@ -207,16 +214,16 @@ terraform -chdir=aws-cache destroy
 
 예상 결과: 아래 조회가 빈 결과를 반환한다.
 
-```powershell
-aws rds describe-db-instances --profile team1 --region ap-northeast-2 --query "DBInstances[?DBInstanceIdentifier=='boa-postgres'].DBInstanceIdentifier" --output text
-aws elasticache describe-replication-groups --profile team1 --region ap-northeast-2 --query "ReplicationGroups[?contains(ReplicationGroupId, 'boa')].ReplicationGroupId" --output text
+```bash
+aws rds describe-db-instances --region ap-northeast-2 --query "DBInstances[?DBInstanceIdentifier=='boa-postgres'].DBInstanceIdentifier" --output text
+aws elasticache describe-replication-groups --region ap-northeast-2 --query "ReplicationGroups[?contains(ReplicationGroupId, 'boa')].ReplicationGroupId" --output text
 ```
 
 ## 7. ECR을 보존하고 Ops ALB만 삭제
 
 `aws-ops destroy` 전체 실행은 ECR까지 지우므로 사용하지 않는다.
 
-```powershell
+```bash
 terraform -chdir=aws-ops init -reconfigure
 terraform -chdir=aws-ops destroy -target=module.ops_alb -target=aws_route53_record.argocd
 ```
@@ -229,17 +236,17 @@ terraform -chdir=aws-ops destroy -target=module.ops_alb -target=aws_route53_reco
 
 이 단계는 GCP VPN tunnel을 `DOWN` 상태로 만든다. GCP 리소스 자체는 삭제하지 않는다.
 
-```powershell
-aws ec2 describe-vpn-connections --profile team1 --region ap-northeast-2 --filters Name=state,Values=pending,available --query "VpnConnections[].{Id:VpnConnectionId,VGW:VpnGatewayId,CGW:CustomerGatewayId,Name:Tags[?Key=='Name']|[0].Value}" --output table
+```bash
+aws ec2 describe-vpn-connections --region ap-northeast-2 --filters Name=state,Values=pending,available --query "VpnConnections[].{Id:VpnConnectionId,VGW:VpnGatewayId,CGW:CustomerGatewayId,Name:Tags[?Key=='Name']|[0].Value}" --output table
 ```
 
 조회한 ID로 순서대로 실행한다.
 
-```powershell
-aws ec2 delete-vpn-connection --profile team1 --region ap-northeast-2 --vpn-connection-id <VPN_ID>
-aws ec2 delete-customer-gateway --profile team1 --region ap-northeast-2 --customer-gateway-id <CGW_ID>
-aws ec2 detach-vpn-gateway --profile team1 --region ap-northeast-2 --vpn-gateway-id <VGW_ID> --vpc-id vpc-0a36febf3057e5da0
-aws ec2 delete-vpn-gateway --profile team1 --region ap-northeast-2 --vpn-gateway-id <VGW_ID>
+```bash
+aws ec2 delete-vpn-connection --region ap-northeast-2 --vpn-connection-id <VPN_ID>
+aws ec2 delete-customer-gateway --region ap-northeast-2 --customer-gateway-id <CGW_ID>
+aws ec2 detach-vpn-gateway --region ap-northeast-2 --vpn-gateway-id <VGW_ID> --vpc-id vpc-0a36febf3057e5da0
+aws ec2 delete-vpn-gateway --region ap-northeast-2 --vpn-gateway-id <VGW_ID>
 ```
 
 목적: AWS 측 cross-cloud VPN 리소스를 제거한다.
@@ -250,7 +257,7 @@ aws ec2 delete-vpn-gateway --profile team1 --region ap-northeast-2 --vpn-gateway
 
 VPN, EKS, ALB, RDS, cache가 모두 사라진 뒤 실행한다.
 
-```powershell
+```bash
 terraform -chdir=aws-core init -reconfigure
 terraform -chdir=aws-core destroy
 ```
@@ -263,26 +270,26 @@ terraform -chdir=aws-core destroy
 
 삭제 대상 확인:
 
-```powershell
-aws eks list-clusters --profile team1 --region ap-northeast-2 --query "clusters[?contains(@, 'boa')]"
-aws elbv2 describe-load-balancers --profile team1 --region ap-northeast-2 --query "LoadBalancers[?contains(LoadBalancerName, 'boa')].LoadBalancerName"
-aws dms describe-replication-tasks --profile team1 --region ap-northeast-2 --query "ReplicationTasks[].ReplicationTaskIdentifier"
-aws dms describe-endpoints --profile team1 --region ap-northeast-2 --query "Endpoints[].EndpointIdentifier"
-aws dms describe-replication-instances --profile team1 --region ap-northeast-2 --query "ReplicationInstances[].ReplicationInstanceIdentifier"
-aws rds describe-db-instances --profile team1 --region ap-northeast-2 --query "DBInstances[?contains(DBInstanceIdentifier, 'boa')].DBInstanceIdentifier"
-aws elasticache describe-replication-groups --profile team1 --region ap-northeast-2 --query "ReplicationGroups[?contains(ReplicationGroupId, 'boa')].ReplicationGroupId"
+```bash
+aws eks list-clusters --region ap-northeast-2 --query "clusters[?contains(@, 'boa')]"
+aws elbv2 describe-load-balancers --region ap-northeast-2 --query "LoadBalancers[?contains(LoadBalancerName, 'boa')].LoadBalancerName"
+aws dms describe-replication-tasks --region ap-northeast-2 --query "ReplicationTasks[].ReplicationTaskIdentifier"
+aws dms describe-endpoints --region ap-northeast-2 --query "Endpoints[].EndpointIdentifier"
+aws dms describe-replication-instances --region ap-northeast-2 --query "ReplicationInstances[].ReplicationInstanceIdentifier"
+aws rds describe-db-instances --region ap-northeast-2 --query "DBInstances[?contains(DBInstanceIdentifier, 'boa')].DBInstanceIdentifier"
+aws elasticache describe-replication-groups --region ap-northeast-2 --query "ReplicationGroups[?contains(ReplicationGroupId, 'boa')].ReplicationGroupId"
 ```
 
 예상 결과: 모두 빈 배열 또는 빈 문자열이다.
 
 보존 대상 확인:
 
-```powershell
-aws s3api head-bucket --bucket boa-terraform-state-6416 --profile team1
-aws ec2 describe-vpcs --profile team1 --region ap-northeast-2 --vpc-ids vpc-0a36febf3057e5da0 --query "Vpcs[].State"
-aws ecr describe-repositories --profile team1 --region ap-northeast-2 --query "repositories[?starts_with(repositoryName, 'boa-')].repositoryName"
-aws secretsmanager list-secrets --profile team1 --region ap-northeast-2 --query "SecretList[?contains(Name, 'boa')].Name"
-aws ec2 describe-instances --profile team1 --region ap-northeast-2 --instance-ids i-0f99d67d85fc7a472 --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,State:State.Name,Ip:PublicIpAddress}"
+```bash
+aws s3api head-bucket --bucket boa-terraform-state-6416
+aws ec2 describe-vpcs --region ap-northeast-2 --vpc-ids vpc-0a36febf3057e5da0 --query "Vpcs[].State"
+aws ecr describe-repositories --region ap-northeast-2 --query "repositories[?starts_with(repositoryName, 'boa-')].repositoryName"
+aws secretsmanager list-secrets --region ap-northeast-2 --query "SecretList[?contains(Name, 'boa')].Name"
+aws ec2 describe-instances --region ap-northeast-2 --instance-ids i-0f99d67d85fc7a472 --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,State:State.Name,Ip:PublicIpAddress}"
 ```
 
 예상 결과: state bucket과 VPC가 존재하고 ECR·Secrets가 조회되며 `final_codeserver`가 `running`이다.
