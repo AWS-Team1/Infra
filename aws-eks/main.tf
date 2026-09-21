@@ -26,9 +26,7 @@ module "eks" {
 
   private_subnet_ids = data.terraform_remote_state.core.outputs.private_subnet_ids
 
-  public_access_cidrs = [
-    "15.165.176.99/32"
-  ]
+  public_access_cidrs = var.public_access_cidrs
 
   node_group_name = "boa-eks-node-group"
 
@@ -48,7 +46,11 @@ module "eks" {
 
   control_plane_log_retention_days = 30
 
-  code_server_role_arn    = var.code_server_role_arn
+  cluster_admin_role_arns = [
+    var.github_terraform_role_arn,
+    var.code_server_role_arn,
+  ]
+
   console_user_group_name = var.console_user_group_name
 
   cluster_role_arn        = module.eks_iam.cluster_role_arn

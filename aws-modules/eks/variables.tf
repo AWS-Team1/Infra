@@ -50,8 +50,9 @@ variable "control_plane_log_retention_days" {
   type = number
 }
 
-variable "code_server_role_arn" {
-  type = string
+variable "cluster_admin_role_arns" {
+  description = "IAM role ARNs that receive EKS cluster admin access"
+  type        = list(string)
 }
 
 variable "region" {
