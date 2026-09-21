@@ -21,3 +21,7 @@ output "database_names" {
 output "dms_username" {
   value = module.cloudsql.dms_username
 }
+
+output "database_private_dns_name" {
+  value = trimsuffix(google_dns_record_set.database.name, ".")
+}

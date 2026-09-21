@@ -5,7 +5,7 @@ variable "gcp_project_id" {
 
 variable "gcp_region" {
   type    = string
-  default = "asia-northeast3"
+  default = "asia-northeast2"
 }
 
 # 터널 4개의 사전 공유 키. 길이 8~64, 0 으로 시작 불가.

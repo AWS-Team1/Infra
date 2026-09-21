@@ -103,14 +103,24 @@ resource "google_sql_database" "app" {
 
 # DMS 대상 엔드포인트가 쓸 계정. 대상 DB 에 DDL·DML 권한이 필요하다.
 resource "google_sql_user" "dms" {
-  name     = var.dms_username
-  instance = google_sql_database_instance.main.name
-  password = var.dms_password
+  name                = var.dms_username
+  instance            = google_sql_database_instance.main.name
+  password_wo         = var.dms_password
+  password_wo_version = 1
 }
 
-# 애플리케이션 계정. 페일오버 전까지는 사실상 놀고 있다.
-resource "google_sql_user" "app" {
-  name     = var.app_username
-  instance = google_sql_database_instance.main.name
-  password = var.app_password
+# accounts 서비스 전용 로그인 계정.
+resource "google_sql_user" "accounts" {
+  name                = var.accounts_username
+  instance            = google_sql_database_instance.main.name
+  password_wo         = var.accounts_password
+  password_wo_version = 1
+}
+
+# ledger 서비스 전용 로그인 계정.
+resource "google_sql_user" "ledger" {
+  name                = var.ledger_username
+  instance            = google_sql_database_instance.main.name
+  password_wo         = var.ledger_password
+  password_wo_version = 1
 }

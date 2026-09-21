@@ -70,13 +70,25 @@ variable "dms_username" {
 variable "dms_password" {
   type      = string
   sensitive = true
+  ephemeral = true
 }
 
-variable "app_username" {
+variable "accounts_username" {
   type = string
 }
 
-variable "app_password" {
+variable "accounts_password" {
   type      = string
   sensitive = true
+  ephemeral = true
+}
+
+variable "ledger_username" {
+  type = string
+}
+
+variable "ledger_password" {
+  type      = string
+  sensitive = true
+  ephemeral = true
 }

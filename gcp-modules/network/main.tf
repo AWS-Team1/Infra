@@ -52,6 +52,7 @@ resource "google_compute_global_address" "psa" {
   name          = "${var.project_name}-psa-range"
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
+  address       = "10.50.0.0"
   prefix_length = 16
   network       = google_compute_network.main.id
 }

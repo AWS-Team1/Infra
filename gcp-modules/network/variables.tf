@@ -4,7 +4,7 @@ variable "project_name" {
 }
 
 variable "region" {
-  description = "GCP 리전. AWS ap-northeast-2 와 짝이 되는 asia-northeast3(서울)를 기본으로 본다"
+  description = "GCP 리전. DR 자원은 일본 오사카 asia-northeast2에 둔다"
   type        = string
 }
 
