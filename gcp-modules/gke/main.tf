@@ -55,6 +55,10 @@ resource "google_container_cluster" "main" {
     enabled = true
   }
 
+  secret_sync_config {
+    enabled = true
+  }
+
   release_channel {
     channel = var.release_channel
   }
