@@ -1,5 +1,6 @@
 variable "gcp_project_id" {
-  type = string
+  type    = string
+  default = "kdt4-1-506106"
 }
 
 variable "region" {
@@ -15,4 +16,8 @@ variable "master_authorized_cidrs" {
     cidr_block   = string
     display_name = string
   }))
+  default = [{
+    cidr_block   = "15.165.176.99/32"
+    display_name = "code-server"
+  }]
 }

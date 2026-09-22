@@ -55,6 +55,10 @@ resource "google_container_cluster" "main" {
     enabled = true
   }
 
+  secret_sync_config {
+    enabled = true
+  }
+
   release_channel {
     channel = var.release_channel
   }
@@ -83,8 +87,8 @@ resource "google_container_node_pool" "main" {
   initial_node_count = var.node_count_min
 
   autoscaling {
-    min_node_count = var.node_count_min
-    max_node_count = var.node_count_max
+    total_min_node_count = var.node_count_min
+    total_max_node_count = var.node_count_max
   }
 
   management {

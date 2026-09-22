@@ -1,3 +1,4 @@
 variable "gcp_project_id" {
-  type = string
+  type    = string
+  default = "kdt4-1-506106"
 }
