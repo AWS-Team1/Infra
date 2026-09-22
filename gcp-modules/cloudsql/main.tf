@@ -124,3 +124,12 @@ resource "google_sql_user" "ledger" {
   password_wo         = var.ledger_password
   password_wo_version = 1
 }
+
+# GKE bootstrap Job 전용 built-in 사용자. Cloud SQL은 built-in 사용자를
+# cloudsqlsuperuser 멤버로 생성하므로 이 계정만 role/grant 정리에 사용한다.
+resource "google_sql_user" "bootstrap" {
+  name                = var.bootstrap_username
+  instance            = google_sql_database_instance.main.name
+  password_wo         = var.bootstrap_password
+  password_wo_version = 1
+}
