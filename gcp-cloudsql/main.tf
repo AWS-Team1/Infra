@@ -28,6 +28,11 @@ ephemeral "random_password" "ledger" {
   special = false
 }
 
+ephemeral "random_password" "bootstrap" {
+  length  = 64
+  special = false
+}
+
 module "cloudsql" {
   source = "../gcp-modules/cloudsql"
 
@@ -53,12 +58,15 @@ module "cloudsql" {
   dms_username = "dms_writer"
   dms_password = var.dms_password
 
-  accounts_username = "accounts_app"
-  accounts_password = ephemeral.random_password.accounts.result
-  ledger_username   = "ledger_app"
-  ledger_password   = ephemeral.random_password.ledger.result
+  accounts_username  = "accounts_app"
+  accounts_password  = ephemeral.random_password.accounts.result
+  ledger_username    = "ledger_app"
+  ledger_password    = ephemeral.random_password.ledger.result
+  bootstrap_username = "boa_bootstrap"
+  bootstrap_password = ephemeral.random_password.bootstrap.result
 
-  deletion_protection = var.deletion_protection
+  # 재구축 런북에서 별도 해제 apply 없이 바로 destroy할 수 있게 한다.
+  deletion_protection = false
 }
 
 # Kubernetes Secret 이름과 1:1로 대응하는 GCP Secret Manager 컨테이너다.
@@ -87,6 +95,24 @@ resource "google_secret_manager_secret_version" "ledger" {
   secret_data_wo_version = 1
 }
 
+resource "google_secret_manager_secret" "database_bootstrap" {
+  secret_id = "boa-database-bootstrap-password"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_secret_manager_secret_version" "database_bootstrap" {
+  secret                 = google_secret_manager_secret.database_bootstrap.id
+  secret_data_wo         = ephemeral.random_password.bootstrap.result
+  secret_data_wo_version = 1
+}
+
 # GKE SecretSync 전용 KSA에 두 DB 비밀번호를 읽을 권한만 준다.
 resource "google_secret_manager_secret_iam_member" "gke" {
   for_each  = google_secret_manager_secret.app_database
@@ -94,6 +120,13 @@ resource "google_secret_manager_secret_iam_member" "gke" {
   secret_id = each.value.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${var.gcp_project_id}.svc.id.goog/subject/ns/bank-of-anthos/sa/bank-app-secret-sync"
+}
+
+resource "google_secret_manager_secret_iam_member" "gke_database_bootstrap" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.database_bootstrap.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${var.gcp_project_id}.svc.id.goog/subject/ns/bank-of-anthos/sa/bank-db-bootstrap"
 }
 
 # Cloud SQL 재생성으로 사설 IP가 바뀌어도 GitOps는 이 DNS 이름만 사용한다.

@@ -14,11 +14,12 @@ resource "google_sql_database_instance" "main" {
   database_version = var.database_version
   region           = var.region
 
-  # 대기 인스턴스를 실수로 지우는 것을 막는다. 정리할 때는 false 로 바꿔 apply 한 뒤 destroy.
+  # 삭제 정책은 호출 root가 정한다. gcp-cloudsql root는 반복 재구축을 위해 false를 사용한다.
   deletion_protection = var.deletion_protection
 
   settings {
     tier              = var.tier
+    edition           = "ENTERPRISE"
     availability_type = var.availability_type
     disk_type         = "PD_SSD"
     disk_size         = var.disk_size
@@ -107,6 +108,7 @@ resource "google_sql_user" "dms" {
   instance            = google_sql_database_instance.main.name
   password_wo         = var.dms_password
   password_wo_version = 1
+  deletion_policy     = "ABANDON"
 }
 
 # accounts 서비스 전용 로그인 계정.
@@ -115,6 +117,7 @@ resource "google_sql_user" "accounts" {
   instance            = google_sql_database_instance.main.name
   password_wo         = var.accounts_password
   password_wo_version = 1
+  deletion_policy     = "ABANDON"
 }
 
 # ledger 서비스 전용 로그인 계정.
@@ -122,5 +125,15 @@ resource "google_sql_user" "ledger" {
   name                = var.ledger_username
   instance            = google_sql_database_instance.main.name
   password_wo         = var.ledger_password
+  password_wo_version = 1
+  deletion_policy     = "ABANDON"
+}
+
+# GKE bootstrap Job 전용 built-in 사용자. Cloud SQL은 built-in 사용자를
+# cloudsqlsuperuser 멤버로 생성하므로 이 계정만 role/grant 정리에 사용한다.
+resource "google_sql_user" "bootstrap" {
+  name                = var.bootstrap_username
+  instance            = google_sql_database_instance.main.name
+  password_wo         = var.bootstrap_password
   password_wo_version = 1
 }

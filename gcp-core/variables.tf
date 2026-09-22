@@ -1,6 +1,7 @@
 variable "gcp_project_id" {
-  description = "GCP 프로젝트 ID. terraform.tfvars 로 넘긴다(저장소에 커밋하지 않는다)"
+  description = "GCP 프로젝트 ID"
   type        = string
+  default     = "kdt4-1-506106"
 }
 
 variable "region" {

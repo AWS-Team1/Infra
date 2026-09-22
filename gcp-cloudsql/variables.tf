@@ -1,5 +1,6 @@
 variable "gcp_project_id" {
-  type = string
+  type    = string
+  default = "kdt4-1-506106"
 }
 
 variable "region" {
@@ -13,10 +14,4 @@ variable "dms_password" {
   type        = string
   sensitive   = true
   ephemeral   = true
-}
-
-variable "deletion_protection" {
-  description = "평상시 true. 전체 철거 직전에만 false로 apply한다"
-  type        = bool
-  default     = true
 }
