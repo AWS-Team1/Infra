@@ -11,6 +11,8 @@
 .terraformrc
 terraform.rc
 *.tfplan
+**/tfplan
+*-state-before-*.json
 crash.log
 crash.*.log
 

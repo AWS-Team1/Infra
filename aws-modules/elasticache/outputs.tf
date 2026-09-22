@@ -18,7 +18,7 @@ output "user_group_id" {
 
 # Username / Password가 저장된 Secrets Manager ARN
 output "secret_arn" {
-  value = aws_secretsmanager_secret.valkey.arn
+  value = data.aws_secretsmanager_secret.valkey.arn
 }
 
 

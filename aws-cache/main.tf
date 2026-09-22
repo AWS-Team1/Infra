@@ -19,9 +19,10 @@ module "elasticache" {
 
   project_name = "boa"
 
-  # Cache / RBAC User 이름
-  cache_name = "boa-valkey"
-  user_name  = "boa-app"
+  # Cache 이름과 운영자가 직접 관리하는 Valkey 자격 증명 Secret.
+  # Terraform은 Secret이나 Secret 값을 생성하지 않고 AWSCURRENT 값을 읽기만 한다.
+  cache_name              = "boa-valkey"
+  credentials_secret_name = "/boa/valkey/credentials"
 
   vpc_id               = data.terraform_remote_state.core.outputs.vpc_id
   private_subnet_cidrs = data.terraform_remote_state.core.outputs.private_subnet_cidrs

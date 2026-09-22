@@ -1,38 +1,20 @@
 # =========================================================
-# Valkey Password
-# - Phase 1에서는 Terraform이 랜덤 비밀번호 생성
-# =========================================================
-
-# Valkey RBAC 사용자의 비밀번호. state 에 평문으로 남는다.
-resource "random_password" "valkey" {
-  length  = 32
-  special = false
-}
-
-
-# =========================================================
 # Secrets Manager
-# - WAS에서 사용할 Valkey Username / Password 보관
+# - 운영자가 미리 만든 Username / Password를 읽는다.
+# - Secret 및 Secret Version의 생명주기는 Terraform이 관리하지 않는다.
 # =========================================================
 
-# 애플리케이션이 읽을 자리. eks-iam 의 bank-of-anthos 정책이 /boa/* 를 허용한다.
-resource "aws_secretsmanager_secret" "valkey" {
-  name                    = "/${var.project_name}/valkey/credentials"
-  recovery_window_in_days = 0
-  tags = {
-    Name = "${var.project_name}-valkey-credentials"
-  }
+data "aws_secretsmanager_secret" "valkey" {
+  name = var.credentials_secret_name
 }
 
+data "aws_secretsmanager_secret_version" "valkey" {
+  secret_id     = data.aws_secretsmanager_secret.valkey.id
+  version_stage = "AWSCURRENT"
+}
 
-# 실제 Username / Password 값을 Secret에 저장
-resource "aws_secretsmanager_secret_version" "valkey" {
-  secret_id = aws_secretsmanager_secret.valkey.id
-
-  secret_string = jsonencode({
-    username = var.user_name
-    password = random_password.valkey.result
-  })
+locals {
+  valkey_credentials = jsondecode(data.aws_secretsmanager_secret_version.valkey.secret_string)
 }
 
 
@@ -44,18 +26,36 @@ resource "aws_secretsmanager_secret_version" "valkey" {
 
 # Valkey RBAC 사용자. 위 비밀번호로 인증하며 Phase 1 은 모든 키·명령을 허용한다.
 resource "aws_elasticache_user" "app" {
-  user_id       = var.user_name
-  user_name     = var.user_name
+  user_id       = local.valkey_credentials.username
+  user_name     = local.valkey_credentials.username
   access_string = "on ~* +@all"
   engine        = "valkey"
 
   authentication_mode {
     type      = "password"
-    passwords = [random_password.valkey.result]
+    passwords = [local.valkey_credentials.password]
   }
 
   tags = {
-    Name = var.user_name
+    Name = local.valkey_credentials.username
+  }
+
+  lifecycle {
+    # username(user_id)이 바뀌면 새 사용자를 먼저 만들고 User Group을
+    # 전환한 다음 기존 사용자를 제거한다.
+    create_before_destroy = true
+
+    precondition {
+      condition = (
+        can(local.valkey_credentials.username) &&
+        can(local.valkey_credentials.password) &&
+        can(regex("^[A-Za-z][A-Za-z0-9-]*$", try(local.valkey_credentials.username, ""))) &&
+        length(try(local.valkey_credentials.password, "")) >= 16 &&
+        length(try(local.valkey_credentials.password, "")) <= 128 &&
+        !can(regex("[,\"'/@]", try(local.valkey_credentials.password, "")))
+      )
+      error_message = "Valkey username must start with a letter and contain only letters, numbers, and hyphens. Password must be 16-128 characters and must not contain comma, quotes, slash, or @."
+    }
   }
 }
 

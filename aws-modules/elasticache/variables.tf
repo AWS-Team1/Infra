@@ -8,8 +8,8 @@ variable "cache_name" {
   type = string
 }
 
-# Valkey RBAC 사용자 이름
-variable "user_name" {
+# 운영자가 생성하고 관리하는 Valkey 자격 증명 Secret 이름
+variable "credentials_secret_name" {
   type = string
 }
 
