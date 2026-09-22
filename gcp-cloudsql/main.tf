@@ -58,7 +58,8 @@ module "cloudsql" {
   ledger_username   = "ledger_app"
   ledger_password   = ephemeral.random_password.ledger.result
 
-  deletion_protection = var.deletion_protection
+  # 재구축 런북에서 별도 해제 apply 없이 바로 destroy할 수 있게 한다.
+  deletion_protection = false
 }
 
 # Kubernetes Secret 이름과 1:1로 대응하는 GCP Secret Manager 컨테이너다.
