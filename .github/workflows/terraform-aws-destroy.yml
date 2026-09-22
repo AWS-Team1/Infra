@@ -14,12 +14,6 @@ on:
         required: true
         type: string
 
-      delete_ecr:
-        description: "ECR 이미지와 Repository도 삭제"
-        required: true
-        default: false
-        type: boolean
-
 permissions:
   contents: read
   id-token: write
@@ -286,21 +280,11 @@ jobs:
 
           terraform init -input=false
 
-          if [[ "${{ inputs.delete_ecr }}" == "true" ]]; then
-            terraform plan \
-              -destroy \
-              -input=false \
-              -lock-timeout=5m \
-              -out=/tmp/aws-ops-preflight.tfplan
-          else
-            terraform plan \
-              -destroy \
-              -input=false \
-              -lock-timeout=5m \
-              -target=module.ops_alb \
-              -target=aws_route53_record.argocd \
-              -out=/tmp/aws-ops-preflight.tfplan
-          fi
+          terraform plan \
+            -destroy \
+            -input=false \
+            -lock-timeout=5m \
+            -out=/tmp/aws-ops-preflight.tfplan
 
       - name: Preflight AWS Cache destroy
         working-directory: aws-cache
@@ -816,13 +800,9 @@ jobs:
   # =========================================================
   # 2. OPS DESTROY
   #
-  # 기본:
-  #   Ops ALB + Route53만 삭제
-  #   ECR/Image 보존
-  #
-  # delete_ecr=true:
-  #   ECR 이미지 먼저 삭제
-  #   aws-ops 전체 Destroy
+  # aws-ops 전체(Ops ALB + Route53) Destroy.
+  # ECR은 이미 Terraform state에서 제거되어 있으므로
+  # 이 destroy의 대상이 아니다. ECR은 콘솔에서 수동 관리한다.
   # =========================================================
   ops-destroy:
     name: AWS Ops Destroy
@@ -864,84 +844,17 @@ jobs:
         working-directory: aws-ops
         run: terraform init -input=false
 
-      - name: Optionally empty ECR repositories
-        if: ${{ inputs.delete_ecr == true }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for REPO in \
-            boa-frontend \
-            boa-userservice \
-            boa-contacts \
-            boa-balancereader \
-            boa-ledgerwriter \
-            boa-transactionhistory
-          do
-
-            if ! aws ecr describe-repositories \
-              --repository-names "${REPO}" \
-              --region "${AWS_REGION_FIXED}" \
-              >/dev/null 2>&1
-            then
-
-              echo "${REPO}: repository does not exist."
-              continue
-
-            fi
-
-            while :; do
-
-              IMAGE_IDS="$(
-                aws ecr list-images \
-                  --repository-name "${REPO}" \
-                  --region "${AWS_REGION_FIXED}" \
-                  --query 'imageIds[:100]' \
-                  --output json
-              )"
-
-              if [[ "$(jq 'length' <<< "${IMAGE_IDS}")" -eq 0 ]]; then
-                echo "${REPO}: no images remain."
-                break
-              fi
-
-              echo "${REPO}: deleting up to 100 images."
-
-              aws ecr batch-delete-image \
-                --repository-name "${REPO}" \
-                --region "${AWS_REGION_FIXED}" \
-                --image-ids "${IMAGE_IDS}" \
-                >/dev/null
-
-            done
-
-          done
-
       - name: Plan AWS Ops destroy
         working-directory: aws-ops
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "${{ inputs.delete_ecr }}" == "true" ]]; then
-
-            terraform plan \
-              -destroy \
-              -input=false \
-              -lock-timeout=5m \
-              -out=tfplan
-
-          else
-
-            terraform plan \
-              -destroy \
-              -input=false \
-              -lock-timeout=5m \
-              -target=module.ops_alb \
-              -target=aws_route53_record.argocd \
-              -out=tfplan
-
-          fi
+          terraform plan \
+            -destroy \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
 
           terraform show \
             -no-color \
@@ -1390,36 +1303,6 @@ jobs:
 
           fi
 
-
-          # -------------------------
-          # ECR (delete_ecr=true일 때)
-          # -------------------------
-          if [[ "${{ inputs.delete_ecr }}" == "true" ]]; then
-
-            for REPO in \
-              boa-frontend \
-              boa-userservice \
-              boa-contacts \
-              boa-balancereader \
-              boa-ledgerwriter \
-              boa-transactionhistory
-            do
-
-              if aws ecr describe-repositories \
-                --repository-names "${REPO}" \
-                --region "${AWS_REGION_FIXED}" \
-                >/dev/null 2>&1
-              then
-                echo "ERROR: ECR repository still exists: ${REPO}"
-                FAILED=1
-              else
-                echo "OK: ECR repository absent: ${REPO}"
-              fi
-
-            done
-
-          fi
-
           test "${FAILED}" -eq 0
 
       - name: Show preserved bootstrap resources
@@ -1435,7 +1318,7 @@ jobs:
           echo "  ${STATE_BUCKET}"
 
           echo
-          echo "Preserved ECR repositories (unless delete_ecr=true):"
+          echo "Console-managed ECR repositories:"
 
           aws ecr describe-repositories \
             --region "${AWS_REGION_FIXED}" \
