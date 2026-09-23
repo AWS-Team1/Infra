@@ -1,42 +1,4 @@
 # =========================================================
-# Valkey Password
-# - Phase 1에서는 Terraform이 랜덤 비밀번호 생성
-# =========================================================
-
-# Valkey RBAC 사용자의 비밀번호. state 에 평문으로 남는다.
-resource "random_password" "valkey" {
-  length  = 32
-  special = false
-}
-
-
-# =========================================================
-# Secrets Manager
-# - WAS에서 사용할 Valkey Username / Password 보관
-# =========================================================
-
-# 애플리케이션이 읽을 자리. eks-iam 의 bank-of-anthos 정책이 /boa/* 를 허용한다.
-resource "aws_secretsmanager_secret" "valkey" {
-  name                    = "/${var.project_name}/valkey/credentials"
-  recovery_window_in_days = 0
-  tags = {
-    Name = "${var.project_name}-valkey-credentials"
-  }
-}
-
-
-# 실제 Username / Password 값을 Secret에 저장
-resource "aws_secretsmanager_secret_version" "valkey" {
-  secret_id = aws_secretsmanager_secret.valkey.id
-
-  secret_string = jsonencode({
-    username = var.user_name
-    password = random_password.valkey.result
-  })
-}
-
-
-# =========================================================
 # ElastiCache RBAC User
 # - WAS가 Valkey 접속 시 사용할 사용자
 # - Phase 1에서는 모든 Key / Command 허용
@@ -51,11 +13,16 @@ resource "aws_elasticache_user" "app" {
 
   authentication_mode {
     type      = "password"
-    passwords = [random_password.valkey.result]
+    passwords = [var.user_password]
   }
 
   tags = {
     Name = var.user_name
+  }
+
+  lifecycle {
+    # user_id가 바뀌면 새 사용자를 먼저 만든 뒤 User Group을 전환한다.
+    create_before_destroy = true
   }
 }
 

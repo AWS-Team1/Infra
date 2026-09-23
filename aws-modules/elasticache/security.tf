@@ -15,7 +15,7 @@ resource "aws_security_group" "cache" {
   }
 }
 
-# 프라이빗 서브넷 CIDR 마다 6379 인바운드를 하나씩 연다. db SG 와 같은 방식이다.
+# 프라이빗 서브넷 CIDR마다 Serverless Valkey의 primary/read 포트 6379-6380을 연다.
 resource "aws_vpc_security_group_ingress_rule" "cache_valkey" {
   for_each = toset(var.private_subnet_cidrs)
 
@@ -23,12 +23,12 @@ resource "aws_vpc_security_group_ingress_rule" "cache_valkey" {
 
   cidr_ipv4   = each.value
   from_port   = 6379
-  to_port     = 6379
+  to_port     = 6380
   ip_protocol = "tcp"
 
-  description = "Allow Valkey from private subnet ${each.value}"
+  description = "Allow Serverless Valkey 6379-6380 from private subnet ${each.value}"
 
   tags = {
-    Name = "${var.project_name}-cache-in-6379-${each.value}"
+    Name = "${var.project_name}-cache-in-6379-6380-${each.value}"
   }
 }

@@ -13,6 +13,12 @@ variable "user_name" {
   type = string
 }
 
+# Valkey RBAC 사용자 비밀번호. 호출자가 외부 Secret에서 읽어 전달한다.
+variable "user_password" {
+  type      = string
+  sensitive = true
+}
+
 # ElastiCache가 배치될 Private Subnet
 variable "subnet_ids" {
   type = list(string)
@@ -33,7 +39,7 @@ variable "vpc_id" {
   type = string
 }
 
-# 6379 인바운드를 허용할 프라이빗 서브넷 CIDR
+# Serverless Valkey 6379-6380 인바운드를 허용할 프라이빗 서브넷 CIDR
 variable "private_subnet_cidrs" {
   type = list(string)
 }

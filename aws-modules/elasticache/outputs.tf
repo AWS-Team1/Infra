@@ -16,12 +16,6 @@ output "user_group_id" {
 }
 
 
-# Username / Password가 저장된 Secrets Manager ARN
-output "secret_arn" {
-  value = aws_secretsmanager_secret.valkey.arn
-}
-
-
 # 캐시 SG ID
 output "cache_security_group_id" {
   value = aws_security_group.cache.id
