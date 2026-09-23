@@ -113,7 +113,7 @@ aws-core remote state → aws-cache → runtime Secret → CSI → 앱
 
 이유:
 
-- credentials 소유 책임을 재사용 모듈에서 환경 root인 `aws-cache`로 이동한다.
+- credentials의 실제 소유자는 계속 운영자다. Secrets Manager 조회와 모듈 연결 책임만 재사용 모듈에서 환경 root인 `aws-cache`로 이동한다.
 - 기존 `boa-app` 사용자에서 Secret의 `redis` 사용자로 바뀔 때 새 사용자를 먼저 만들고 User Group을 전환한다.
 
 ### `aws-modules/elasticache/variables.tf`, `outputs.tf`
@@ -277,14 +277,16 @@ ALB의 개별 IP를 A 레코드에 직접 입력하지 않는다. ALB가 교체�
 
 ## 9. 검토 후 적용 순서
 
-1. `/boa/valkey/credentials`의 `AWSCURRENT`가 `username`, `password` JSON 키를 가지는지 확인한다.
-2. `aws-cache`에서 `terraform plan`을 실행한다.
-3. 계획에 수동 credentials Secret 생성·삭제가 없는지 확인한다.
-4. ElastiCache 사용자 교체, SG 6380 추가, runtime Secret 생성만 의도대로 표시되는지 확인한다.
-5. 팀 검토 후 `aws-cache`를 apply한다.
-6. `/boa/valkey/runtime`에 현재 cache endpoint의 `host`가 생겼는지 확인한다. 값을 문서나 로그에 복사하지 않는다.
-7. 최초 배포면 `manual/eks`, Argo CD 운영 중이면 shared → accounts/ledger → frontend 순서로 동기화한다.
-8. 서비스 ALB 생성 후 Route53 Alias 대상을 확인한다.
+1. `/boa/valkey/credentials`의 `AWSCURRENT`가 `username`, `password` JSON 키를 가지며 `username`이 정확히 `redis`인지 콘솔에서 확인한다. 비밀번호는 출력하거나 문서에 복사하지 않는다.
+2. 기존 State가 추적하는 옛 Secret ARN을 `terraform state show module.elasticache.aws_secretsmanager_secret.valkey`로 확인한다. 이 명령은 State를 변경하지 않는다.
+3. 콘솔에서 새로 만든 `/boa/valkey/credentials`의 ARN과 2번의 옛 ARN이 다른지 확인한다. 이번 환경은 옛 Secret을 삭제한 뒤 새로 생성했으므로 ARN이 달라야 한다.
+4. `aws-cache`에서 `terraform plan`을 실행한다. refresh가 존재하지 않는 옛 ARN을 State에서 제거하고 새 Secret은 data source로만 읽는지 확인한다.
+5. 계획에 현재 수동 credentials Secret 또는 그 Secret Version 삭제가 표시되면 apply하지 말고 팀 검토를 요청한다. 이 경우에만 별도 State 분리 절차가 필요하다.
+6. ElastiCache 사용자 교체, SG 6380 추가, runtime Secret 생성만 의도대로 표시되는지 확인한다.
+7. 팀 검토 후 `aws-cache`를 apply한다.
+8. `/boa/valkey/runtime`에 현재 cache endpoint의 `host`가 생겼는지 확인한다. 값을 문서나 로그에 복사하지 않는다.
+9. 최초 배포면 `manual/eks`, Argo CD 운영 중이면 shared → accounts/ledger → frontend 순서로 동기화한다.
+10. 서비스 ALB 생성 후 Route53 Alias 대상을 확인한다.
 
 ## 10. 캐시 교체 후 수동 Secret 갱신
 
@@ -344,7 +346,7 @@ kubectl kustomize manual/eks
 - 앱 장애 시 GitOps 변경을 이전 커밋으로 되돌릴 수 있다. Valkey 인프라는 남아 있어도 기존 앱 동작에는 영향이 없다.
 - 기존 랜덤 비밀번호 코드를 단순히 되돌리면 수동 `/boa/valkey/credentials`와 이름이 충돌할 수 있다. Terraform 쪽 롤백은 plan과 State를 팀이 함께 확인한 후 진행한다.
 - `/boa/valkey/runtime`은 endpoint만 가지며 `aws-cache` destroy 시 즉시 삭제된다.
+- 현재 설계는 `/boa/valkey/credentials` 비밀번호가 변경되지 않는다는 전제다. 단일 ElastiCache 비밀번호를 사용하므로 향후 자격증명을 회전하려면 유지보수 시간에 Terraform 변경, secret-sync 재시작, 앱 6개 rollout을 연속 수행해야 한다. 무중단 회전이 필요해지면 ElastiCache의 두 비밀번호를 이용하는 별도 전환 설계를 먼저 추가한다.
 - credentials 비밀번호는 `aws_elasticache_user` 입력이므로 Terraform State에 민감 정보로 저장될 수 있다. 기존 S3 State 접근권한과 암호화 정책을 유지해야 한다.
 - 여섯 앱은 같은 `redis` 계정과 `on ~* +@all` 권한을 공유한다. 팀 과제 범위의 단순성을 위한 선택이며, 서비스별 사용자와 키 패턴 분리는 후속 보안 개선 사항이다.
 - `03_manifests/gke`, `03_manifests/base`, GCP Terraform 코드는 변경하지 않는다.
-
