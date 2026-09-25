@@ -11,10 +11,8 @@ resource "aws_elasticache_user" "app" {
   access_string = "on ~* +@all"
   engine        = "valkey"
 
-  authentication_mode {
-    type      = "password"
-    passwords = [var.user_password]
-  }
+  passwords_wo         = var.user_password
+  passwords_wo_version = var.credentials_version
 
   tags = {
     Name = var.user_name

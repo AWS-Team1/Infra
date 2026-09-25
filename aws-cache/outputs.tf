@@ -3,8 +3,8 @@ output "cache_endpoint" {
 }
 
 output "secret_arn" {
-  description = "Externally managed Valkey credentials Secret ARN"
-  value       = data.aws_secretsmanager_secret.valkey_credentials.arn
+  description = "Terraform-managed Valkey credentials Secret ARN"
+  value       = aws_secretsmanager_secret.valkey_credentials.arn
 }
 
 output "runtime_secret_arn" {

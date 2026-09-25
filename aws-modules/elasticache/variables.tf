@@ -13,10 +13,17 @@ variable "user_name" {
   type = string
 }
 
-# Valkey RBAC 사용자 비밀번호. 호출자가 외부 Secret에서 읽어 전달한다.
+# Terraform 실행 중 생성한 Valkey RBAC 비밀번호.
+# plan/state에 저장하지 않고 write-only 인수로 전달한다.
 variable "user_password" {
   type      = string
   sensitive = true
+  ephemeral = true
+}
+
+# Secrets Manager와 ElastiCache 비밀번호 갱신을 동기화하는 버전
+variable "credentials_version" {
+  type = number
 }
 
 # ElastiCache가 배치될 Private Subnet
