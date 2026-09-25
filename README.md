@@ -1,14 +1,16 @@
 # AWS Infrastructure with Terraform
 
 Terraform으로 AWS 서울 리전(`ap-northeast-2`)의 VPC, EKS, PostgreSQL RDS,
-Serverless Valkey와 운영용 ALB를 관리합니다. 저장소 최상위에는 실행 대상 `.tf`가 없으며,
-독립된 Terraform root와 재사용 모듈로 구성됩니다.
+Serverless Valkey와 운영용 ALB, Tokyo 리전(`ap-northeast-1`)의 DR state backup S3를
+관리합니다. 저장소 최상위에는 실행 대상 `.tf`가 없으며, 독립된 Terraform root와
+재사용 모듈로 구성됩니다.
 
 ## 수명주기 구조
 
 | root | state key | 소유 범위 | provider | 의존 |
 |---|---|---|---|---|
 | `persistent` | `aws/persistent/terraform.tfstate` | JWT·애플리케이션 DB 장기 보존 Secret | aws · random | — |
+| `aws-state-backup` | `aws/state-backup/terraform.tfstate` | Tokyo DR state backup S3 | aws | 기존 GitHub Terraform OIDC Role 조회 |
 | `aws-core` | `aws/core/terraform.tfstate` | VPC·Subnet·NAT | aws | — |
 | `aws-rds` | `aws/rds/terraform.tfstate` | PostgreSQL RDS | aws | core |
 | `aws-cache` | `aws/cache/terraform.tfstate` | Serverless Valkey | aws · random | core |
@@ -28,14 +30,15 @@ Code Server bootstrap 값을 포함하고, CI는 동일한 `env/backend.hcl`을 
 정상 적용 순서:
 
 ```text
-persistent → aws-core → aws-rds → aws-cache → aws-ops → aws-eks
+persistent → aws-state-backup → aws-core → aws-rds → aws-cache → aws-ops → aws-eks
 → 임시 CI runner CIDR 허용 → aws-eks-platform → aws-db-bootstrap → 기준 CIDR 복원
+→ Terraform state DR backup
 ```
 
 정상 삭제 순서:
 
 ```text
-명시적 Destroy 확인 → AWS 계정 확인 → DMS/VPN 차단 검사
+명시적 Destroy 확인 → AWS 계정 확인 → DMS/VPN 기반 destroy_core 판정
 → 임시 CI runner CIDR 허용
 → EKS external pre-clean
   (Argo CD reconciliation 정지 → 프로젝트 Ingress/TargetGroupBinding 삭제
@@ -43,7 +46,8 @@ persistent → aws-core → aws-rds → aws-cache → aws-ops → aws-eks
    → controller가 생성한 ALB/Target Group/Security Group/ENI/EC2/Instance Profile 정리 대기)
 → 전체 root destroy plan 사전 검증
 → aws-db-bootstrap → aws-eks-platform → aws-eks → aws-ops
-→ aws-cache → aws-rds → aws-core → persistent(full_teardown=true만)
+→ aws-cache → aws-rds → aws-core(DMS/VPN dependency가 없을 때만)
+→ persistent(full_teardown=true만)
 → 삭제 결과 검증 → 클러스터가 남아 있으면 기준 CIDR 복원
 ```
 
@@ -64,6 +68,52 @@ CSI RBAC root이므로 Apply/Destroy 수명주기에 계속 포함합니다.
 `persistent`는 일반 삭제에서 제외합니다. Secret까지 포함한 전체 폐기 의도가 명시된 경우에만
 별도 `full_teardown` 입력으로 마지막에 삭제합니다. ECR은 이 저장소의 Terraform
 적용·삭제 수명주기에 포함하지 않습니다.
+
+`aws-state-backup`도 routine Destroy와 `full_teardown` 모두에서 제외합니다. Backup bucket은
+`force_destroy = false`와 `prevent_destroy = true`로 보호합니다. 명시적으로 폐기하려면 먼저
+백업 보존 여부를 결정하고 `prevent_destroy`를 코드에서 해제한 뒤, 별도 승인 절차로 이 root만
+삭제해야 합니다. Lifecycle expiration은 보존 정책이 정해지지 않아 구성하지 않습니다.
+
+## Terraform state DR backup
+
+기존 Terraform backend는 서울 리전의 `boa-terraform-state-6416`을 그대로 사용합니다.
+`aws-state-backup` root 자체의 state도 이 primary backend의
+`aws/state-backup/terraform.tfstate`에 저장합니다. Tokyo 리전의
+`boa-terraform-state-backup-769413326616-ap-northeast-1`은 backend가 아니라 Apply 성공 후
+생성되는 state 사본만 저장하는 DR destination입니다.
+
+Apply workflow는 모든 Terraform root 적용이 성공한 실제 Apply에서만 별도 runner의
+`backup-state` job을 실행합니다. `scripts/collect-terraform-state-backup.sh`는 기존 backend를
+초기화하고 각 root에 `terraform state pull`을 실행해 권한이 제한된 임시 디렉터리에 state만
+수집합니다. `scripts/upload-terraform-state-backup-s3.sh`는 완성된 backup directory를 받아
+S3 업로드와 object 크기·S3 SHA-256 checksum 검증만 담당합니다. 따라서 향후 Backup Server로
+전환할 때는 수집 로직과 root 목록을 유지하고 upload adapter 호출만 교체할 수 있습니다.
+
+각 backup set은 다음처럼 기존 데이터를 덮어쓰지 않는 key를 사용합니다.
+
+```text
+terraform-state-backups/20260926T051500Z/<github-sha>/
+├── metadata.json
+├── SHA256SUMS
+├── persistent.tfstate
+├── aws-state-backup.tfstate
+├── aws-core.tfstate
+├── aws-rds.tfstate
+├── aws-cache.tfstate
+├── aws-ops.tfstate
+├── aws-eks.tfstate
+├── aws-eks-platform.tfstate
+└── aws-db-bootstrap.tfstate
+```
+
+`metadata.json`에는 UTC timestamp, GitHub SHA/run ID/ref, AWS account ID, source repository와
+root 목록만 기록하며 state 본문이나 Secret 값은 넣지 않습니다. State는 GitHub Artifact나
+Git에 업로드하지 않고 job 성공·실패와 관계없이 runner의 임시 디렉터리에서 제거합니다.
+Bucket은 public access 전면 차단, versioning, Bucket owner enforced, SSE-S3(AES256), HTTPS
+강제 정책을 사용합니다. 기존 `boa-github-terraform-dev` Role은 이 저장소에서 소유하지 않고
+bucket policy principal로만 참조하며, backup prefix에 `s3:GetObject`, `s3:PutObject`와 bucket의
+`s3:GetBucketLocation`만 허용합니다. `s3:DeleteObject`와 `s3:DeleteObjectVersion`은 명시적으로
+거부합니다.
 
 ## 로컬 실행
 

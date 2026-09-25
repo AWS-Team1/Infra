@@ -34,6 +34,7 @@ jobs:
       matrix:
         root:
           - persistent
+          - aws-state-backup
           - aws-core
           - aws-rds
           - aws-cache
@@ -88,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for root in persistent aws-core aws-rds aws-cache aws-ops aws-eks; do
+          for root in persistent aws-state-backup aws-core aws-rds aws-cache aws-ops aws-eks; do
             bash scripts/terraform-aws-root.sh plan-apply "$root"
           done
 
@@ -108,3 +109,107 @@ jobs:
         if: ${{ always() }}
         shell: bash
         run: bash scripts/eks-runner-access.sh restore
+
+  backup-state:
+    name: Backup Terraform State
+    needs: apply
+    if: ${{ needs.apply.result == 'success' && inputs.confirm == true }}
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      BACKUP_ROOTS: |
+        persistent
+        aws-state-backup
+        aws-core
+        aws-rds
+        aws-cache
+        aws-ops
+        aws-eks
+        aws-eks-platform
+        aws-db-bootstrap
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+
+      - name: Collect and upload Terraform state backup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup_dir=$(mktemp -d "${RUNNER_TEMP}/terraform-state-backup-${timestamp}-${GITHUB_SHA}.XXXXXX")
+          cleanup() {
+            [[ -n "${backup_dir:-}" && "$backup_dir" == "${RUNNER_TEMP}"/terraform-state-backup-* ]] || return 1
+            rm -rf -- "$backup_dir"
+          }
+          trap cleanup EXIT
+
+          roots=()
+          while IFS= read -r root; do
+            [[ -n "$root" ]] && roots+=("$root")
+          done <<< "$BACKUP_ROOTS"
+          (( ${#roots[@]} > 0 ))
+
+          bash scripts/collect-terraform-state-backup.sh "$backup_dir" "${roots[@]}"
+
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          roots_json=$(printf '%s\n' "${roots[@]}" | jq -R . | jq -s .)
+          jq -n \
+            --arg utc_timestamp "$timestamp" \
+            --arg github_sha "$GITHUB_SHA" \
+            --arg github_run_id "$GITHUB_RUN_ID" \
+            --arg git_ref "$GITHUB_REF" \
+            --arg aws_account_id "$account_id" \
+            --arg source_repository "$GITHUB_REPOSITORY" \
+            --argjson backup_roots "$roots_json" \
+            '{
+              schema_version: 1,
+              utc_timestamp: $utc_timestamp,
+              github_sha: $github_sha,
+              github_run_id: $github_run_id,
+              git_ref: $git_ref,
+              aws_account_id: $aws_account_id,
+              source_repository: $source_repository,
+              backup_roots: $backup_roots
+            }' > "$backup_dir/metadata.json"
+
+          (
+            cd "$backup_dir"
+            state_files=()
+            for root in "${roots[@]}"; do
+              state_files+=("$root.tfstate")
+            done
+            sha256sum "${state_files[@]}" > SHA256SUMS
+          )
+
+          backup_bucket=$(terraform -chdir=aws-state-backup output -raw bucket_name)
+          backup_region=$(terraform -chdir=aws-state-backup output -raw bucket_region)
+          backup_prefix=$(terraform -chdir=aws-state-backup output -raw object_prefix)
+          object_prefix="${backup_prefix}/${timestamp}/${GITHUB_SHA}"
+
+          bash scripts/upload-terraform-state-backup-s3.sh \
+            "$backup_dir" \
+            "$backup_bucket" \
+            "$backup_region" \
+            "$object_prefix"
+
+          echo "Terraform state backup uploaded and verified: s3://${backup_bucket}/${object_prefix}/"

@@ -14,7 +14,7 @@ case "$ACTION" in
 esac
 
 case "$ROOT" in
-  persistent|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap) ;;
+  persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap) ;;
   *) echo "unsupported Terraform root: $ROOT" >&2; exit 2 ;;
 esac
 
