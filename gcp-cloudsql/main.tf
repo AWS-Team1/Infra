@@ -70,6 +70,9 @@ module "cloudsql" {
 }
 
 # Kubernetes Secret 이름과 1:1로 대응하는 GCP Secret Manager 컨테이너다.
+## 만약 기존에 secrects이 존재한다면 해당 컴포넌트를 resource --> data 컴포넌트로 변경해야 한다.
+
+
 resource "google_secret_manager_secret" "app_database" {
   for_each  = toset(["accounts", "ledger"])
   secret_id = "boa-database-${each.key}"
@@ -83,6 +86,32 @@ resource "google_secret_manager_secret" "app_database" {
   }
 }
 
+resource "google_secret_manager_secret" "database_bootstrap" {
+  secret_id = "boa-database-bootstrap-password"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+
+#--data 리소스로 변경
+#data "google_secret_manager_secret" "app_database" {
+#  for_each  = toset(["accounts", "ledger"])
+#  project   = var.gcp_project_id
+#  secret_id = "boa-database-${each.key}"
+#}
+
+#data "google_secret_manager_secret" "database_bootstrap" {
+#  project   = var.gcp_project_id
+#  secret_id = "boa-database-bootstrap-password"
+#}
+
+# 각 생성된 시크릿에 DB별 비밀번호 업로드, 버전을 명시해줘서 변경시에 알수 있게 설정
 resource "google_secret_manager_secret_version" "accounts" {
   secret                 = google_secret_manager_secret.app_database["accounts"].id
   secret_data_wo         = ephemeral.random_password.accounts.result
@@ -95,17 +124,7 @@ resource "google_secret_manager_secret_version" "ledger" {
   secret_data_wo_version = 1
 }
 
-resource "google_secret_manager_secret" "database_bootstrap" {
-  secret_id = "boa-database-bootstrap-password"
 
-  replication {
-    auto {}
-  }
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
 
 resource "google_secret_manager_secret_version" "database_bootstrap" {
   secret                 = google_secret_manager_secret.database_bootstrap.id
@@ -143,6 +162,8 @@ resource "google_dns_managed_zone" "database" {
   }
 }
 
+# 테라폼 destroy / apply시마다 RDS 이름이 바뀌기에 DNS 호스트영역을 만들고
+# 내부적으로 DB에 대한 A레코드를 등록 -> DB DNS명을 "db.gcp.boa.internal"로 고정시킴
 resource "google_dns_record_set" "database" {
   name         = "db.gcp.boa.internal."
   managed_zone = google_dns_managed_zone.database.name
