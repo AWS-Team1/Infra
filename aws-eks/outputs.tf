@@ -18,3 +18,7 @@ output "cluster_security_group_id" {
 output "node_group_name" {
   value = module.eks.node_group_name
 }
+
+output "baseline_public_access_cidrs" {
+  value = module.environment.eks_baseline_public_access_cidrs
+}

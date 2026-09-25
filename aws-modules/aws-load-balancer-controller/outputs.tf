@@ -5,5 +5,5 @@ output "iam_role_arn" {
 
 output "service_account_name" {
   description = "ServiceAccount name"
-  value       = kubernetes_service_account_v1.this.metadata[0].name
+  value       = var.service_account_name
 }

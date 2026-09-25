@@ -1,115 +1,138 @@
 # AWS Infrastructure with Terraform
 
-Terraform을 사용해 AWS 서울 리전(`ap-northeast-2`)에 VPC, EKS, PostgreSQL RDS,
-ElastiCache Serverless Valkey와 운영용 ALB를 구성하는 프로젝트입니다. 저장소 최상위에는
-`.tf` 파일이 없고 재사용 모듈과 독립된 root로 나뉩니다.
+Terraform으로 AWS 서울 리전(`ap-northeast-2`)의 VPC, EKS, PostgreSQL RDS,
+Serverless Valkey와 운영용 ALB를 관리합니다. 저장소 최상위에는 실행 대상 `.tf`가 없으며,
+독립된 Terraform root와 재사용 모듈로 구성됩니다.
 
-## 디렉터리 구조
+## 수명주기 구조
+
+| root | state key | 소유 범위 | provider | 의존 |
+|---|---|---|---|---|
+| `persistent` | `aws/persistent/terraform.tfstate` | JWT·애플리케이션 DB 장기 보존 Secret | aws · random | — |
+| `aws-core` | `aws/core/terraform.tfstate` | VPC·Subnet·NAT | aws | — |
+| `aws-rds` | `aws/rds/terraform.tfstate` | PostgreSQL RDS | aws | core |
+| `aws-cache` | `aws/cache/terraform.tfstate` | Serverless Valkey | aws · random | core |
+| `aws-ops` | `aws/ops/terraform.tfstate` | 운영 ALB | aws | core |
+| `aws-eks` | `aws/eks/terraform.tfstate` | EKS·IAM·Add-on·Pod Identity | aws | core |
+| `aws-eks-platform` | `aws/eks-platform/terraform.tfstate` | AWS Load Balancer Controller Helm/SA·CSI RBAC | kubernetes · helm | core · eks |
+| `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | DB bootstrap IAM·Pod Identity | aws | eks · rds · persistent Secret 조회 |
+
+비민감 공통 입력은 local module인 `env/main.tf`가 단일 기준입니다. 모든 root가 이
+모듈을 직접 읽으므로 GitHub Actions와 Code Server의 일반 `terraform apply`가 같은 값을
+사용합니다. S3 backend는 `boa-terraform-state-6416` 버킷과 `use_lockfile = true`를
+사용합니다. Terraform backend는 module 값을 참조할 수 없으므로 각 `backend.tf`에
+Code Server bootstrap 값을 포함하고, CI는 동일한 `env/backend.hcl`을 명시적으로 전달합니다.
+
+## 적용 및 삭제 순서
+
+정상 적용 순서:
 
 ```text
-.
-├── aws-modules/                재사용 모듈. backend 없음, .terraform.lock.hcl 추적 안 함
-│   ├── network/                기존 VPC / Public·Private·DB·Cache Subnet / NAT
-│   ├── eks-iam/                IAM 역할·정책·부착 (클러스터 미참조)
-│   ├── eks/                    EKS Cluster / Managed Node Group / Add-ons / Pod Identity / Access Entry
-│   ├── rds/                    PostgreSQL RDS / Subnet·Parameter Group / 보안 그룹 / 모니터링 IAM·로그
-│   ├── elasticache/            Serverless Valkey / RBAC User / 보안 그룹 / Secrets Manager 비밀번호
-│   └── aws-load-balancer-controller/   IAM · ServiceAccount · helm_release
-├── aws-core/                   루트 — network
-├── aws-eks/                    루트 — eks-iam · eks · aws-load-balancer-controller
-├── aws-rds/                    루트 — rds
-├── aws-cache/                  루트 — elasticache
-├── aws-ops/                    루트 — ECR · ops ALB
-├── aws-db-bootstrap/           루트 — DB Secret · bootstrap IAM/Pod Identity
-└── docs/specs/                 설계 문서
+persistent → aws-core → aws-rds → aws-cache → aws-ops → aws-eks
+→ 임시 CI runner CIDR 허용 → aws-eks-platform → aws-db-bootstrap → 기준 CIDR 복원
 ```
 
-각 root는 독립된 backend와 state를 사용합니다. `aws-eks`는 추가로
-`variables.tf`(`code_server_role_arn`) · `rbac.tf` · `terraform.tfvars`(.gitignore)를 가집니다.
+정상 삭제 순서:
 
-## 구성 개요
-
-- Network(`aws-core`): 기존 VPC를 재사용하고 2개 가용 영역의 Public, Private, DB, Cache Subnet을 관리합니다. Private Subnet은 가용 영역별 NAT Gateway를 사용합니다.
-- EKS(`aws-eks`): Private Subnet에 Kubernetes 클러스터와 Managed Node Group을 생성합니다. VPC CNI, CoreDNS, kube-proxy, EBS CSI, Pod Identity Agent 애드온과 AWS Load Balancer Controller를 함께 설치합니다. IAM은 `eks-iam` 모듈이 별도로 담당합니다(클러스터 미참조 — [설계 문서 §6](docs/specs/2026-09-14-terraform-root-split-design.md) 참조).
-- RDS(`aws-rds`): DB Subnet에 암호화된 PostgreSQL Multi-AZ 인스턴스를 생성합니다. 인바운드 5432는 EKS 클러스터 보안 그룹이 아니라 **프라이빗 서브넷 CIDR**로 허용합니다(`aws-rds`가 `aws-eks`를 몰라도 되게 하는 설계 — 설계 문서 결정 3). Master 비밀번호는 AWS Secrets Manager에서 관리하고 백업·Performance Insights·Enhanced Monitoring을 활성화합니다.
-- ElastiCache(`aws-cache`): Private Subnet에 Serverless Valkey 캐시를 생성합니다. 접속 비밀번호는 무작위로 생성해 Secrets Manager에 저장하고 RBAC 사용자 그룹에 연결합니다.
-- State: 루트마다 별도 state key로 같은 S3 Bucket에 암호화 저장하며, `use_lockfile`(S3 네이티브 락)로 동시 실행을 방지합니다. 자세한 내용은 아래 "루트 구조" 절을 참조하세요.
-
-## 주요 기본값
-
-| 항목 | 설정 |
-| --- | --- |
-| AWS Region | `ap-northeast-2` |
-| VPC | 기존 `vpc-0a36febf3057e5da0` 재사용, CIDR `192.168.0.0/16` |
-| Subnet CIDR | public `192.168.2.0/24` `192.168.3.0/24` · private `192.168.8.0/24` `192.168.9.0/24` · db `192.168.16.0/24` `192.168.17.0/24` |
-| EKS Version | `1.36` |
-| EKS Node | `t3.medium`, On-Demand, 2대 |
-| RDS | PostgreSQL 16.14, `db.t4g.micro`, Multi-AZ |
-| ElastiCache | Serverless Valkey, 최대 1GB / 1,000 ECPU/s |
-
-## 사전 준비
-
-- Terraform 1.11 이상
-- AWS 리소스를 생성할 수 있는 자격 증명
-- State 저장용 S3 Bucket `boa-terraform-state-6416` (아래 "루트 구조" 절 참조)
-- EKS 관리자 권한을 연결할 IAM Role ARN
-
-`aws-eks/terraform.tfvars`에 EKS 접근용 Role ARN을 설정합니다. 이 파일은 `.gitignore`에 포함되어 Git에 올라가지 않습니다.
-
-```hcl
-code_server_role_arn = "arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>"
+```text
+명시적 Destroy 확인 → AWS 계정 확인 → DMS/VPN 차단 검사
+→ 임시 CI runner CIDR 허용
+→ EKS external pre-clean
+  (Argo CD reconciliation 정지 → 프로젝트 Ingress/TargetGroupBinding 삭제
+   → Karpenter NodePool 삭제 → NodeClaim 종료 대기 → EC2NodeClass 삭제
+   → controller가 생성한 ALB/Target Group/Security Group/ENI/EC2/Instance Profile 정리 대기)
+→ 전체 root destroy plan 사전 검증
+→ aws-db-bootstrap → aws-eks-platform → aws-eks → aws-ops
+→ aws-cache → aws-rds → aws-core → persistent(full_teardown=true만)
+→ 삭제 결과 검증 → 클러스터가 남아 있으면 기준 CIDR 복원
 ```
 
-## 실행 방법
+GitHub Actions의 AWS Apply는 위 Terraform root와 state만 관리합니다. GitOps repository
+checkout, runtime render, generated manifest commit/push, Argo CD bootstrap·Root Application·
+Application sync, Karpenter 및 application 배포는 워크플로에 포함하지 않습니다. 이 작업은
+Code Server 또는 별도의 관리 절차에서 수동으로 수행합니다.
 
-저장소 최상위에는 실행할 `.tf`가 없습니다. `aws-core` → `aws-rds` → `aws-cache` →
-`aws-eks` → `aws-ops` → `aws-db-bootstrap` 순서로 각 root를 실행합니다.
+Destroy의 `EKS external pre-clean`은 GitOps 배포 자동화가 아니라, 이미 live Kubernetes
+API에 존재하는 이 프로젝트 소유 resource와 controller-owned AWS dependency를 Terraform
+destroy 전에 안전하게 제거하는 teardown-only 단계입니다. GitOps repository는 사용하지 않으며,
+정확한 name/namespace/label/tag로 식별된 resource만 삭제·대기합니다. dependency가 제한 시간
+안에 사라지지 않으면 `aws-eks-platform` destroy 전에 중단합니다.
 
-## 주의사항
+`aws-eks-platform`은 GitOps workload가 아니라 Terraform이 소유하는 LBC Helm/ServiceAccount와
+CSI RBAC root이므로 Apply/Destroy 수명주기에 계속 포함합니다.
 
-- `aws-eks/main.tf`의 `public_access_cidrs`는 EKS API 접근을 허용할 공인 IP로 변경해야 합니다.
-- S3 Backend Bucket은 `terraform init` 전에 별도로 생성되어 있어야 합니다.
-- `terraform.tfvars`, `.terraform/`, `*.tfstate`는 민감정보 보호를 위해 커밋하지 않습니다.
-- NAT Gateway 2개, EKS, Multi-AZ RDS, ElastiCache는 실행 중 비용이 발생합니다. 테스트가 끝나면 불필요한 리소스를 정리하세요.
-- 현재 RDS의 `skip_final_snapshot`과 `apply_immediately` 설정은 테스트 환경에 맞춰져 있습니다. 운영 환경에서는 삭제 방지와 최종 Snapshot 정책을 검토하세요.
+`persistent`는 일반 삭제에서 제외합니다. Secret까지 포함한 전체 폐기 의도가 명시된 경우에만
+별도 `full_teardown` 입력으로 마지막에 삭제합니다. ECR은 이 저장소의 Terraform
+적용·삭제 수명주기에 포함하지 않습니다.
 
-## 루트 구조
+## 로컬 실행
 
-| 루트 | state key | provider | 의존 |
-|---|---|---|---|
-| `aws-core` | `aws/core/terraform.tfstate` | aws | — |
-| `aws-eks` | `aws/eks/terraform.tfstate` | aws · kubernetes · helm | core |
-| `aws-rds` | `aws/rds/terraform.tfstate` | aws | core |
-| `aws-cache` | `aws/cache/terraform.tfstate` | aws | core |
-| `aws-ops` | `aws/ops/terraform.tfstate` | aws | core |
-| `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | aws | eks · rds |
+Code Server와 GitHub Actions는 같은 root 구성을 사용합니다. 최초 clone이나 backend
+변경 후 `terraform init`을 한 번 실행하면 일반 `terraform plan`과 `terraform apply`를
+추가 변수 인자 없이 사용할 수 있습니다.
 
-`aws-ops` 는 ECR 과 ops ALB 를 갖는다. ALB 가 VPC·퍼블릭 서브넷을 필요로 하므로 core 를 읽는다.
+Code Server에서 AWS 자격 증명을 확인하고 대상 root로 이동하는 예:
 
-버킷은 `boa-terraform-state-6416` (ap-northeast-2). `use_lockfile = true` 라
-락 객체가 `<key>.tflock` 으로 key 마다 따로 생긴다. DynamoDB 테이블은 쓰지 않는다.
+```bash
+aws sts get-caller-identity
+cd aws-core
+terraform init
+terraform plan
+terraform apply
+```
 
-### 검증 (backend 접속 없음)
+저장소 최상위에서 실행하려면 다음처럼 `-chdir`를 사용할 수 있습니다.
 
-    terraform -chdir=<루트> init -backend=false
-    terraform -chdir=<루트> validate
-    terraform fmt -recursive -check
+```bash
+terraform -chdir=<root> init -backend-config=../env/backend.hcl
+terraform -chdir=<root> plan
+terraform -chdir=<root> apply
+```
 
-### apply
+기존 환경에서는 최초 1회 state migration을 완료하기 전까지 `persistent`와
+`aws-eks-platform`에 `apply`하면 안 됩니다. 빈 destination state가 기존 physical
+resource를 새로 만들려고 하기 때문입니다.
 
-`aws-core`를 먼저 적용한다. `aws-rds` · `aws-cache` · `aws-eks` · `aws-ops`를
-그 뒤 적용하고, 마지막으로 `aws-db-bootstrap`을 적용한다.
-`aws-eks` 는 `terraform.tfvars` 의 `code_server_role_arn` 이 필요하다 (저장소에 없음).
+적용/삭제 자동화는 `scripts/terraform-aws-root.sh`를 사용합니다. 일반 apply 전에 저장된
+plan JSON을 검사하여 delete 또는 replace가 있으면 중단합니다.
 
-`aws-db-bootstrap`의 `HARD-CODED` 주석은 다른 계정·리전에 재사용할 때 반드시 확인한다.
-상세 순서는 GitOps 저장소의 `docs/EKS_GITOPS_CICD_RUNBOOK.md`를 따른다.
+```bash
+scripts/terraform-aws-root.sh plan-apply <root>
+scripts/terraform-aws-root.sh plan-destroy <root>
+scripts/terraform-aws-root.sh apply-destroy <root>
+```
 
-### 삭제 순서
+EKS API의 CI runner 접근은 `scripts/eks-runner-access.sh grant|restore`로 명시적으로
+허용하고 항상 기준 CIDR로 복원합니다. Terraform `null_resource`나 `local-exec`으로
+외부 런타임 동작을 숨기지 않습니다.
+GitHub Actions는 OIDC Role을 사용하고 Code Server는 EC2 instance role을 사용하지만,
+EKS access entry에는 두 실행 주체를 모두 Cluster Admin으로 유지합니다.
+GitHub 환경에는 Terraform 실행용 `AWS_ROLE_ARN`, `AWS_REGION` variable만 필요하며,
+`GITOPS_TOKEN`, `ARGOCD_REPO_USERNAME`, `ARGOCD_REPO_PASSWORD`는 AWS Terraform
+워크플로에서 사용하지 않습니다.
 
-Ingress 가 만든 ALB 는 Terraform state 에 없다. 먼저 치우지 않으면
-`aws-core` destroy 가 `DependencyViolation` 으로 막힌다.
+## 검증
 
-    1. kubectl delete ingress ...
-    2. ALB · SG · 대상 그룹 소멸 확인
-    3. terraform -chdir=aws-eks destroy
-    4. terraform -chdir=aws-core destroy
+backend 접속 없이 정적 검증할 수 있습니다.
+
+```bash
+terraform fmt -recursive -check
+terraform -chdir=<root> init -backend=false
+terraform -chdir=<root> validate
+```
+
+기존 state를 새 수명주기 root로 옮기는 최초 1회 절차는
+`docs/plans/2026-09-25-aws-terraform-relifecycle-migration.md`를 따릅니다.
+`scripts/migrate-aws-relifecycle-state.sh`는 기본적으로 정확한 명령만 출력하며,
+실행 모드는 이중 확인과 사전 state backup을 요구합니다.
+
+## 주요 기본값과 주의사항
+
+- Region: `ap-northeast-2`
+- EKS: Kubernetes `1.36`, `t3.large` On-Demand 기본 노드 2대
+- RDS: PostgreSQL 16.14, `db.t4g.micro`, Multi-AZ
+- Cache: Serverless Valkey, 최대 1GB / 1,000 ECPU/s
+- NAT Gateway 2개, EKS, Multi-AZ RDS, ElastiCache는 실행 중 비용이 발생합니다.
+- `terraform.tfvars`, `.terraform/`, `*.tfstate`는 커밋하지 않습니다.
+- 장기 보존 Secret과 state migration 전에는 migration 문서의 backup·import·source cleanup
+  순서와 physical ID를 다시 확인합니다.

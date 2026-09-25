@@ -9,38 +9,38 @@ data "terraform_remote_state" "core" {
   backend = "s3"
 
   config = {
-    bucket = "boa-terraform-state-6416"
+    bucket = module.environment.state_bucket
     key    = "aws/core/terraform.tfstate"
-    region = "ap-northeast-2"
+    region = module.environment.aws_region
   }
 }
 
 module "ops_alb" {
   source = "../aws-modules/ops-alb"
 
-  project_name = "boa"
+  project_name = module.environment.project_name
 
   vpc_id               = data.terraform_remote_state.core.outputs.vpc_id
   public_subnet_ids    = data.terraform_remote_state.core.outputs.public_subnet_ids
   private_subnet_cidrs = data.terraform_remote_state.core.outputs.private_subnet_cidrs
 
   # ACM 인증서는 이미 발급된 것을 읽어 쓴다.
-  certificate_domain = "*.bespinglobal.site"
+  certificate_domain = module.environment.certificate_domain
 
   # argocd_host는 HTTPS 리스너 Host 조건과 Route53 A(alias) 이름에 함께 사용한다.
-  argocd_host        = "argocd.bespinglobal.site"
+  argocd_host        = module.environment.argocd_host
   argocd_target_port = 8080
 }
 
 data "aws_route53_zone" "public" {
   # HARD-CODED: ACM 인증서와 ops ALB Host 조건에 맞는 Public Hosted Zone이다.
-  name         = "bespinglobal.site."
+  name         = "${module.environment.public_zone_name}."
   private_zone = false
 }
 
 resource "aws_route53_record" "argocd" {
   zone_id = data.aws_route53_zone.public.zone_id
-  name    = "argocd.bespinglobal.site"
+  name    = module.environment.argocd_host
   type    = "A"
 
   alias {

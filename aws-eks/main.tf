@@ -3,29 +3,29 @@ data "terraform_remote_state" "core" {
   backend = "s3"
 
   config = {
-    bucket = "boa-terraform-state-6416"
+    bucket = module.environment.state_bucket
     key    = "aws/core/terraform.tfstate"
-    region = "ap-northeast-2"
+    region = module.environment.aws_region
   }
 }
 
 module "eks_iam" {
   source = "../aws-modules/eks-iam"
 
-  project_name = "boa"
-  cluster_name = "boa-eks"
-  region       = "ap-northeast-2"
+  project_name = module.environment.project_name
+  cluster_name = module.environment.cluster_name
+  region       = module.environment.aws_region
 }
 
 module "eks" {
   source = "../aws-modules/eks"
 
-  project_name       = "boa"
-  cluster_name       = "boa-eks"
+  project_name       = module.environment.project_name
+  cluster_name       = module.environment.cluster_name
   kubernetes_version = "1.36"
 
   private_subnet_ids  = data.terraform_remote_state.core.outputs.private_subnet_ids
-  public_access_cidrs = var.public_access_cidrs
+  public_access_cidrs = module.environment.eks_baseline_public_access_cidrs
 
   node_group_name = "boa-eks-node-group"
 
@@ -33,7 +33,7 @@ module "eks" {
     "t3.large"
   ]
 
-  region = "ap-northeast-2"
+  region = module.environment.aws_region
 
   node_capacity_type = "ON_DEMAND"
   node_disk_size     = 30
@@ -46,9 +46,10 @@ module "eks" {
 
   control_plane_log_retention_days = 30
 
-  # GitHub Actions Terraform Role만 EKS 관리자 권한을 가진다.
+  # Both supported Terraform execution identities retain cluster-admin access.
   cluster_admin_role_arns = [
     var.github_terraform_role_arn,
+    var.code_server_role_arn,
   ]
 
   console_user_group_name = var.console_user_group_name
@@ -65,8 +66,6 @@ module "aws_load_balancer_controller" {
   source = "../aws-modules/aws-load-balancer-controller"
 
   cluster_name = module.eks.cluster_name
-  region       = "ap-northeast-2"
-  vpc_id       = data.terraform_remote_state.core.outputs.vpc_id
 
   depends_on = [
     module.eks

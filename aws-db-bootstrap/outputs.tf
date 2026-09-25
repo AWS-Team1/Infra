@@ -1,6 +1,6 @@
 # GitOps 준비 스크립트가 값을 주입할 기존 호환용 DB Secret 이름이다.
 output "application_database_secret_name" {
-  value = aws_secretsmanager_secret.app_database.name
+  value = data.aws_secretsmanager_secret.app_database.name
 }
 
 # 운영 확인이나 외부 자동화에서 bootstrap 전용 역할을 식별할 ARN이다.

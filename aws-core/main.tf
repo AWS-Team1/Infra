@@ -7,10 +7,10 @@
 module "network" {
   source = "../aws-modules/network"
 
-  project_name = "boa"
-  cluster_name = "boa-eks"
+  project_name = module.environment.project_name
+  cluster_name = module.environment.cluster_name
 
-  region   = "ap-northeast-2"
+  region   = module.environment.aws_region
   vpc_cidr = "192.168.0.0/16"
 
   availability_zones = [
@@ -41,12 +41,12 @@ module "network" {
 
 # 기존 Private Hosted Zone 을 새 VPC에 다시 연결한다.
 data "aws_route53_zone" "boa_internal" {
-  name         = "boa.internal."
+  name         = "${module.environment.private_zone_name}."
   private_zone = true
 }
 
 resource "aws_route53_zone_association" "boa_internal" {
   zone_id    = data.aws_route53_zone.boa_internal.zone_id
   vpc_id     = module.network.vpc_id
-  vpc_region = "ap-northeast-2"
+  vpc_region = module.environment.aws_region
 }

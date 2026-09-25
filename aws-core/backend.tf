@@ -1,11 +1,11 @@
 terraform {
   backend "s3" {
-    bucket  = "boa-terraform-state-6416"
-    key     = "aws/core/terraform.tfstate"
-    region  = "ap-northeast-2"
-    encrypt = true
-
-    # S3 네이티브 락 (Terraform 1.10+). DynamoDB 테이블 불필요.
+    # Embedded bootstrap values make a fresh Code Server clone work with
+    # ordinary terraform init; CI supplies the same env/backend.hcl values.
+    bucket       = "boa-terraform-state-6416"
+    key          = "aws/core/terraform.tfstate"
+    region       = "ap-northeast-2"
+    encrypt      = true
     use_lockfile = true
   }
 }

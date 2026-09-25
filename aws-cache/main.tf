@@ -3,9 +3,9 @@ data "terraform_remote_state" "core" {
   backend = "s3"
 
   config = {
-    bucket = "boa-terraform-state-6416"
+    bucket = module.environment.state_bucket
     key    = "aws/core/terraform.tfstate"
-    region = "ap-northeast-2"
+    region = module.environment.aws_region
   }
 }
 
@@ -17,7 +17,7 @@ data "terraform_remote_state" "core" {
 module "elasticache" {
   source = "../aws-modules/elasticache"
 
-  project_name = "boa"
+  project_name = module.environment.project_name
 
   # Cache / RBAC User 이름
   cache_name = "boa-valkey"

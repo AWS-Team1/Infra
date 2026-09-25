@@ -8,18 +8,20 @@ on:
         required: true
         default: false
         type: boolean
-
       confirmation_text:
         description: "정확히 DESTROY-AWS 입력"
         required: true
         type: string
+      full_teardown:
+        description: "persistent Secret까지 명시적으로 제거"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   id-token: write
 
-# Apply와 Destroy가 동시에 돌지 않게
-# terraform-apply.yml과 같은 concurrency group 사용
 concurrency:
   group: terraform-aws-dev
   cancel-in-progress: false
@@ -28,1309 +30,444 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TERRAFORM_VERSION: "1.16.2"
-
-  AWS_ACCOUNT_ID: "769413326616"
-  AWS_REGION_FIXED: "ap-northeast-2"
-  STATE_BUCKET: "boa-terraform-state-6416"
+  EXPECTED_AWS_ACCOUNT_ID: "769413326616"
+  EKS_CLUSTER_NAME: "boa-eks"
 
 jobs:
-  # =========================================================
-  # 0. DESTROY GUARD
-  #
-  # - 명시적 사용자 확인
-  # - AWS 계정 검증
-  # - 현재 VPC 확인
-  # - DMS/VPN이 아직 연결돼 있으면 파괴 시작 전에 중단
-  #
-  # DMS / VPN은 향후 별도 DR Destroy workflow가 담당한다.
-  # =========================================================
   guard:
     name: Destroy Guard
     runs-on: ubuntu-latest
     environment: dev-infra
-    timeout-minutes: 15
-
+    timeout-minutes: 20
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
     outputs:
       vpc_id: ${{ steps.core.outputs.vpc_id }}
-
     steps:
       - name: Require explicit confirmation
         shell: bash
         run: |
           set -euo pipefail
+          [[ "${{ inputs.confirm_destroy }}" == "true" ]]
+          [[ "${{ inputs.confirmation_text }}" == "DESTROY-AWS" ]]
 
-          if [[ "${{ inputs.confirm_destroy }}" != "true" ]]; then
-            echo "confirm_destroy must be checked."
-            exit 1
-          fi
-
-          if [[ "${{ inputs.confirmation_text }}" != "DESTROY-AWS" ]]; then
-            echo "confirmation_text must be exactly DESTROY-AWS."
-            exit 1
-          fi
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          echo "AWS Account: ${ACCOUNT_ID}"
-
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Read AWS Core state
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+
+      - name: Read current VPC
         id: core
         shell: bash
         run: |
           set -euo pipefail
+          terraform -chdir=aws-core init -reconfigure -backend-config=../env/backend.hcl -input=false
+          vpc_id=$(terraform -chdir=aws-core output -raw vpc_id 2>/dev/null || true)
+          echo "vpc_id=$vpc_id" >> "$GITHUB_OUTPUT"
 
-          terraform -chdir=aws-core init -input=false
-
-          VPC_ID="$(
-            terraform -chdir=aws-core \
-              output -raw vpc_id \
-              2>/dev/null || true
-          )"
-
-          echo "VPC ID: ${VPC_ID:-none}"
-
-          echo "vpc_id=${VPC_ID}" >> "${GITHUB_OUTPUT}"
-
-      - name: Block destroy while DR resources still exist
+      - name: Block destroy while DMS or VPN resources remain
         shell: bash
         env:
           VPC_ID: ${{ steps.core.outputs.vpc_id }}
         run: |
           set -euo pipefail
-
-          BLOCKED=0
-
-          DMS_INSTANCE="$(
-            aws dms describe-replication-instances \
-              --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" \
-              --output text
-          )"
-
-          DMS_SUBNET_GROUP="$(
-            aws dms describe-replication-subnet-groups \
-              --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" \
-              --output text
-          )"
-
-          if [[ -n "${DMS_INSTANCE}" || -n "${DMS_SUBNET_GROUP}" ]]; then
-            echo "AWS DMS resources still exist."
-            echo "Run the DR/DMS destroy workflow before AWS destroy."
-            BLOCKED=1
+          blocked=0
+          dms_instance=$(aws dms describe-replication-instances --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" --output text)
+          dms_subnet_group=$(aws dms describe-replication-subnet-groups --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" --output text)
+          if [[ -n "$dms_instance" || -n "$dms_subnet_group" ]]; then
+            echo "DMS resources remain; run the DR/DMS teardown first." >&2
+            blocked=1
           fi
-
-          if [[ -n "${VPC_ID}" ]]; then
-            VPN_GWS="$(
-              aws ec2 describe-vpn-gateways \
-                --filters \
-                  "Name=attachment.vpc-id,Values=${VPC_ID}" \
-                  "Name=attachment.state,Values=attaching,attached,detaching" \
-                --query 'VpnGateways[].VpnGatewayId' \
-                --output text
-            )"
-
-            if [[ -n "${VPN_GWS}" ]]; then
-              echo "VPN Gateway is still attached to ${VPC_ID}: ${VPN_GWS}"
-              echo "Run the DR/VPN destroy workflow before AWS destroy."
-              BLOCKED=1
+          if [[ -n "$VPC_ID" ]]; then
+            vpn_gateways=$(aws ec2 describe-vpn-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" "Name=attachment.state,Values=attaching,attached,detaching" --query 'VpnGateways[].VpnGatewayId' --output text)
+            if [[ -n "$vpn_gateways" ]]; then
+              echo "VPN gateways remain: $vpn_gateways" >&2
+              blocked=1
             fi
           fi
+          [[ "$blocked" -eq 0 ]]
 
-          test "${BLOCKED}" -eq 0
-
-
-  # =========================================================
-  # PRE-FLIGHT
-  #
-  # 실제 리소스를 지우기 전에 모든 Terraform destroy plan을
-  # 한 번 dry-run 해 필수 변수/구문/remote-state/data-source 문제를
-  # 최대한 앞에서 잡는다.
-  #
-  # aws-db-bootstrap은 Secret/IAM을 보존하므로
-  # Pod Identity Association만 targeted plan 한다.
-  # =========================================================
-  preflight:
-    name: Terraform Destroy Preflight
+  destroy:
+    name: Sequential AWS Destroy
     needs: guard
-
     runs-on: ubuntu-latest
     environment: dev-infra
-    timeout-minutes: 30
-
+    timeout-minutes: 240
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ORIGINAL_VPC_ID: ${{ needs.guard.outputs.vpc_id }}
     steps:
-      - name: Checkout
+      - name: Checkout Infra
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          echo "AWS Account: ${ACCOUNT_ID}"
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Prepare required EKS Terraform input
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RUNNER_IP="$(
-            curl -fsS https://checkip.amazonaws.com |
-            tr -d '[:space:]'
-          )"
-
-          if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            echo "Invalid runner IP: ${RUNNER_IP}"
-            exit 1
-          fi
-
-          echo "Preflight runner IP: ${RUNNER_IP}"
-
-          echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" \
-            >> "${GITHUB_ENV}"
-
-      - name: Preflight DB Bootstrap association destroy
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform -chdir=aws-db-bootstrap init -input=false
-
-          ADDRESS='aws_eks_pod_identity_association.db_bootstrap'
-
-          if terraform -chdir=aws-db-bootstrap state list |
-            grep -Fxq "${ADDRESS}"
-          then
-            terraform -chdir=aws-db-bootstrap plan \
-              -destroy \
-              -input=false \
-              -lock-timeout=5m \
-              -target="${ADDRESS}" \
-              -out=/tmp/aws-db-bootstrap-preflight.tfplan
-          else
-            echo "DB bootstrap Pod Identity association is not in state."
-          fi
-
-      - name: Preflight EKS destroy
-        working-directory: aws-eks
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform init -input=false
-
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -target=module.eks \
-            -target=module.eks_iam \
-            -target=module.aws_load_balancer_controller.aws_eks_pod_identity_association.this \
-            -target=module.aws_load_balancer_controller.aws_iam_role_policy_attachment.this \
-            -target=module.aws_load_balancer_controller.aws_iam_policy.this \
-            -target=module.aws_load_balancer_controller.aws_iam_role.this \
-            -out=/tmp/aws-eks-preflight.tfplan
-
-      - name: Preflight AWS Ops destroy
-        working-directory: aws-ops
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform init -input=false
-
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=/tmp/aws-ops-preflight.tfplan
-
-      - name: Preflight AWS Cache destroy
-        working-directory: aws-cache
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform init -input=false
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=/tmp/aws-cache-preflight.tfplan
-
-      - name: Preflight AWS RDS destroy
-        working-directory: aws-rds
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform init -input=false
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=/tmp/aws-rds-preflight.tfplan
-
-      - name: Preflight AWS Core destroy
-        working-directory: aws-core
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform init -input=false
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=/tmp/aws-core-preflight.tfplan
-
-
-  # =========================================================
-  # 1. EKS PRE-CLEAN + DESTROY
-  #
-  # 같은 GitHub Runner에서 전부 수행한다.
-  # Runner IP가 Job마다 바뀌기 때문에
-  # kubectl cleanup과 EKS destroy를 같은 Job에 둔다.
-  #
-  # 순서:
-  # Runner /32 허용
-  # → Argo CD reconcile 정지
-  # → Ingress/TGB/Karpenter NodePool/NodeClaim/EC2NodeClass 정리
-  # → 앱 ALB 삭제 대기
-  # → DB Bootstrap Pod Identity 분리
-  # → JWT Secret state에서만 분리
-  # → EKS AWS 리소스 삭제
-  # =========================================================
-  eks-teardown:
-    name: EKS Pre-clean and Destroy
-    needs:
-      - guard
-      - preflight
-
-    runs-on: ubuntu-latest
-    environment: dev-infra
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+      - uses: azure/setup-kubectl@v4
 
       - name: Verify AWS identity
         shell: bash
-        run: |
-          set -euo pipefail
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
 
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          echo "AWS Account: ${ACCOUNT_ID}"
-
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: Detect runner public IP and set EKS Terraform input
+      - name: Grant temporary runner access to EKS
         shell: bash
-        run: |
-          set -euo pipefail
+        run: bash scripts/eks-runner-access.sh grant
 
-          RUNNER_IP="$(
-            curl -fsS https://checkip.amazonaws.com |
-            tr -d '[:space:]'
-          )"
-
-          if [[ ! "${RUNNER_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            echo "Invalid runner IP: ${RUNNER_IP}"
-            exit 1
-          fi
-
-          echo "Runner IP: ${RUNNER_IP}"
-
-          echo "RUNNER_PUBLIC_IP=${RUNNER_IP}" >> "${GITHUB_ENV}"
-          echo "TF_VAR_public_access_cidrs=[\"${RUNNER_IP}/32\"]" \
-            >> "${GITHUB_ENV}"
-
-      - name: Detect EKS cluster
+      - name: Detect whether EKS exists
         id: eks
         shell: bash
         run: |
           set -euo pipefail
-
-          if aws eks describe-cluster \
-            --name boa-eks \
-            --region "${AWS_REGION_FIXED}" \
-            >/dev/null 2>&1
-          then
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-            echo "boa-eks exists."
+          if aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME" >/dev/null 2>&1; then
+            aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
-            echo "boa-eks does not exist."
-            echo "Kubernetes cleanup will be skipped."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Allow this runner to access EKS
+      - name: EKS external pre-clean
         if: ${{ steps.eks.outputs.exists == 'true' }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
 
-          DESIRED_CIDR="${RUNNER_PUBLIC_IP}/32"
+          APP_NAMESPACE="bank-of-anthos"
+          APP_INGRESS="boa-ingress"
+          APP_STACK="${APP_NAMESPACE}/${APP_INGRESS}"
+          ARGO_NAMESPACE="argocd"
+          ARGO_TGB="argocd-server"
+          KARPENTER_NODEPOOL="default"
+          KARPENTER_NODECLASS="default"
 
-          CURRENT_CIDRS="$(
-            aws eks describe-cluster \
-              --name boa-eks \
-              --region "${AWS_REGION_FIXED}" \
-              --query 'cluster.resourcesVpcConfig.publicAccessCidrs' \
-              --output text
-          )"
+          echo "ARGOCD_RESTORE_REQUIRED=false" >> "$GITHUB_ENV"
 
-          if grep -qw "${DESIRED_CIDR}" <<< "${CURRENT_CIDRS}"; then
-            echo "Current runner is already allowed."
-          else
-            UPDATE_ID="$(
-              aws eks update-cluster-config \
-                --name boa-eks \
-                --region "${AWS_REGION_FIXED}" \
-                --resources-vpc-config \
-                  "{\"endpointPublicAccess\":true,\"endpointPrivateAccess\":true,\"publicAccessCidrs\":[\"${DESIRED_CIDR}\"]}" \
-                --query 'update.id' \
-                --output text
-            )"
-
-            echo "EKS network update: ${UPDATE_ID}"
-
-            for _ in {1..120}; do
-
-              STATUS="$(
-                aws eks describe-update \
-                  --name boa-eks \
-                  --region "${AWS_REGION_FIXED}" \
-                  --update-id "${UPDATE_ID}" \
-                  --query 'update.status' \
-                  --output text
-              )"
-
-              echo "EKS network update status: ${STATUS}"
-
-              case "${STATUS}" in
-
-                Successful)
-                  break
-                  ;;
-
-                Failed|Cancelled)
-                  echo "EKS endpoint CIDR update failed."
-                  exit 1
-                  ;;
-
-              esac
-
+          wait_namespaced_absent() {
+            local namespace=$1 resource=$2 timeout_seconds=$3
+            local deadline=$(( $(date +%s) + timeout_seconds ))
+            local current
+            while :; do
+              current=$(kubectl -n "$namespace" get "$resource" --ignore-not-found -o name)
+              [[ -z "$current" ]] && return 0
+              (( $(date +%s) < deadline )) || {
+                echo "Timed out waiting for $namespace/$resource deletion: $current" >&2
+                return 1
+              }
               sleep 10
-
             done
-
-            STATUS="$(
-              aws eks describe-update \
-                --name boa-eks \
-                --region "${AWS_REGION_FIXED}" \
-                --update-id "${UPDATE_ID}" \
-                --query 'update.status' \
-                --output text
-            )"
-
-            test "${STATUS}" = "Successful"
-
-          fi
-
-          aws eks update-kubeconfig \
-            --name boa-eks \
-            --region "${AWS_REGION_FIXED}"
-
-          kubectl get nodes -o wide
-
-      - name: Stop Argo CD reconciliation
-        if: ${{ steps.eks.outputs.exists == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          CONTROLLER="$(
-            kubectl -n argocd get statefulset \
-              -l app.kubernetes.io/name=argocd-application-controller \
-              -o jsonpath='{.items[0].metadata.name}' \
-              2>/dev/null || true
-          )"
-
-          if [[ -n "${CONTROLLER}" ]]; then
-
-            echo "Scaling ${CONTROLLER} to 0."
-
-            kubectl -n argocd \
-              scale statefulset "${CONTROLLER}" \
-              --replicas=0
-
-            kubectl -n argocd wait \
-              --for=delete pod \
-              -l app.kubernetes.io/name=argocd-application-controller \
-              --timeout=5m \
-              2>/dev/null || true
-
-          else
-
-            echo "Argo CD application-controller not found."
-
-          fi
-
-      - name: Remove Kubernetes resources that create AWS dependencies
-        if: ${{ steps.eks.outputs.exists == 'true' }}
-        id: k8s_cleanup
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APP_ALB_DNS="$(
-            kubectl -n bank-of-anthos \
-              get ingress boa-ingress \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' \
-              2>/dev/null || true
-          )"
-
-          echo "Application ALB DNS: ${APP_ALB_DNS:-none}"
-
-          echo "app_alb_dns=${APP_ALB_DNS}" \
-            >> "${GITHUB_OUTPUT}"
-
-          kubectl -n bank-of-anthos \
-            delete ingress boa-ingress \
-            --ignore-not-found \
-            --wait=false || true
-
-          kubectl -n argocd \
-            delete targetgroupbinding argocd-server \
-            --ignore-not-found \
-            --wait=false || true
-
-          kubectl delete nodepool default \
-            --ignore-not-found \
-            --wait=false || true
-
-          if kubectl get nodeclaims \
-            -o name \
-            2>/dev/null |
-            grep -q .
-          then
-
-            kubectl wait \
-              --for=delete nodeclaims \
-              --all \
-              --timeout=15m
-
-          else
-
-            echo "No Karpenter NodeClaims found."
-
-          fi
-
-          # EC2NodeClass가 spec.role을 사용하므로 Karpenter가 생성한
-          # IAM Instance Profile을 정리하려면 NodeClaim 회수 후
-          # EC2NodeClass도 삭제하고 finalizer 완료까지 기다려야 한다.
-          kubectl delete ec2nodeclass default \
-            --ignore-not-found \
-            --wait=false || true
-
-          if kubectl get ec2nodeclass default \
-            >/dev/null 2>&1
-          then
-
-            kubectl wait \
-              --for=delete ec2nodeclass/default \
-              --timeout=10m
-
-          else
-
-            echo "Karpenter EC2NodeClass default is already absent."
-
-          fi
-
-      - name: Wait for application ALB deletion
-        if: ${{ steps.eks.outputs.exists == 'true' && steps.k8s_cleanup.outputs.app_alb_dns != '' }}
-        shell: bash
-        env:
-          APP_ALB_DNS: ${{ steps.k8s_cleanup.outputs.app_alb_dns }}
-        run: |
-          set -euo pipefail
-
-          DEADLINE=$(( $(date +%s) + 900 ))
-
-          while :; do
-
-            ALB_ARN="$(
-              aws elbv2 describe-load-balancers \
-                --region "${AWS_REGION_FIXED}" \
-                --query "LoadBalancers[?DNSName=='${APP_ALB_DNS}'].LoadBalancerArn" \
-                --output text
-            )"
-
-            if [[ -z "${ALB_ARN}" ]]; then
-              echo "Application ALB deletion complete."
-              break
-            fi
-
-            echo "Waiting for application ALB deletion: ${ALB_ARN}"
-
-            if (( $(date +%s) >= DEADLINE )); then
-              echo "Timed out waiting for application ALB deletion."
-              exit 1
-            fi
-
-            sleep 10
-
-          done
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      # -----------------------------------------------------
-      # DB Secret / IAM은 보존.
-      # 새 EKS에 매달린 Pod Identity Association만 제거.
-      # -----------------------------------------------------
-      - name: Detach DB Bootstrap Pod Identity from EKS
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform -chdir=aws-db-bootstrap \
-            init -input=false
-
-          ADDRESS='aws_eks_pod_identity_association.db_bootstrap'
-
-          if terraform -chdir=aws-db-bootstrap \
-            state list |
-            grep -Fxq "${ADDRESS}"
-          then
-
-            terraform -chdir=aws-db-bootstrap plan \
-              -destroy \
-              -input=false \
-              -lock-timeout=5m \
-              -target="${ADDRESS}" \
-              -out=tfplan
-
-            terraform -chdir=aws-db-bootstrap apply \
-              -input=false \
-              -lock-timeout=5m \
-              tfplan
-
-          else
-
-            echo "DB bootstrap Pod Identity association is not in state."
-
-          fi
-
-      # -----------------------------------------------------
-      # JWT Secret은 실제 AWS에는 남겨둔다.
-      #
-      # 다음 Apply 때 우리가 만든
-      # Adopt preserved JWT secrets 단계가 다시 import한다.
-      #
-      # Kubernetes/Helm 객체도 state에서 제거한 뒤
-      # EKS 자체 삭제에 맡긴다.
-      # -----------------------------------------------------
-      - name: Prepare EKS state for safe destroy
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform -chdir=aws-eks \
-            init -input=false
-
-          forget_if_managed() {
-
-            ADDRESS="$1"
-
-            if terraform -chdir=aws-eks \
-              state list |
-              grep -Fxq "${ADDRESS}"
-            then
-
-              echo "Removing from Terraform state only: ${ADDRESS}"
-
-              terraform -chdir=aws-eks \
-                state rm "${ADDRESS}"
-
-            else
-
-              echo "Not in state: ${ADDRESS}"
-
-            fi
           }
 
-          # JWT Secret container는 실제 AWS에 보존
-          forget_if_managed \
-            'module.eks.aws_secretsmanager_secret.jwt_private'
-
-          forget_if_managed \
-            'module.eks.aws_secretsmanager_secret.jwt_public'
-
-          # EKS 내부 리소스
-          forget_if_managed \
-            'kubernetes_cluster_role_binding_v1.secrets_store_sync'
-
-          forget_if_managed \
-            'kubernetes_cluster_role_v1.secrets_store_sync'
-
-          forget_if_managed \
-            'module.aws_load_balancer_controller.helm_release.this'
-
-          forget_if_managed \
-            'module.aws_load_balancer_controller.kubernetes_service_account_v1.this'
-
-      - name: Plan EKS AWS resource destroy
-        working-directory: aws-eks
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -target=module.eks \
-            -target=module.eks_iam \
-            -target=module.aws_load_balancer_controller.aws_eks_pod_identity_association.this \
-            -target=module.aws_load_balancer_controller.aws_iam_role_policy_attachment.this \
-            -target=module.aws_load_balancer_controller.aws_iam_policy.this \
-            -target=module.aws_load_balancer_controller.aws_iam_role.this \
-            -out=tfplan
-
-          terraform show \
-            -no-color \
-            tfplan
-
-      - name: Destroy EKS AWS resources
-        working-directory: aws-eks
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform apply \
-            -input=false \
-            -lock-timeout=5m \
-            tfplan
-
-      - name: Verify EKS deletion
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for _ in {1..90}; do
-
-            if ! aws eks describe-cluster \
-              --name boa-eks \
-              --region "${AWS_REGION_FIXED}" \
-              >/dev/null 2>&1
-            then
-
-              echo "boa-eks is deleted."
-              exit 0
-
-            fi
-
-            echo "Waiting for boa-eks deletion..."
-
-            sleep 10
-
-          done
-
-          echo "boa-eks still exists after timeout."
-          exit 1
-
-
-  # =========================================================
-  # 2. OPS DESTROY
-  #
-  # aws-ops 전체(Ops ALB + Route53) Destroy.
-  # ECR은 이미 Terraform state에서 제거되어 있으므로
-  # 이 destroy의 대상이 아니다. ECR은 콘솔에서 수동 관리한다.
-  # =========================================================
-  ops-destroy:
-    name: AWS Ops Destroy
-    needs: eks-teardown
-
-    runs-on: ubuntu-latest
-    environment: dev-infra
-    timeout-minutes: 45
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Init AWS Ops
-        working-directory: aws-ops
-        run: terraform init -input=false
-
-      - name: Plan AWS Ops destroy
-        working-directory: aws-ops
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=tfplan
-
-          terraform show \
-            -no-color \
-            tfplan
-
-      - name: Destroy AWS Ops resources
-        working-directory: aws-ops
-        run: |
-          terraform apply \
-            -input=false \
-            -lock-timeout=5m \
-            tfplan
-
-
-  # =========================================================
-  # 3. CACHE DESTROY
-  # =========================================================
-  cache-destroy:
-    name: AWS Cache Destroy
-    needs: ops-destroy
-
-    runs-on: ubuntu-latest
-    environment: dev-infra
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Init AWS Cache
-        working-directory: aws-cache
-        run: terraform init -input=false
-
-      - name: Plan AWS Cache destroy
-        working-directory: aws-cache
-        run: |
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=tfplan
-
-      - name: Show AWS Cache destroy plan
-        working-directory: aws-cache
-        run: terraform show -no-color tfplan
-
-      - name: Destroy AWS Cache
-        working-directory: aws-cache
-        run: |
-          terraform apply \
-            -input=false \
-            -lock-timeout=5m \
-            tfplan
-
-
-  # =========================================================
-  # 4. RDS DESTROY
-  # =========================================================
-  rds-destroy:
-    name: AWS RDS Destroy
-    needs: cache-destroy
-
-    runs-on: ubuntu-latest
-    environment: dev-infra
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Init AWS RDS
-        working-directory: aws-rds
-        run: terraform init -input=false
-
-      - name: Plan AWS RDS destroy
-        working-directory: aws-rds
-        run: |
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=tfplan
-
-      - name: Show AWS RDS destroy plan
-        working-directory: aws-rds
-        run: terraform show -no-color tfplan
-
-      - name: Destroy AWS RDS
-        working-directory: aws-rds
-        run: |
-          terraform apply \
-            -input=false \
-            -lock-timeout=5m \
-            tfplan
-
-
-  # =========================================================
-  # 5. CORE DESTROY
-  #
-  # VPC 삭제 전에:
-  # - ALB/NLB 잔존 여부 대기
-  # - DMS 재확인
-  # - VPN 재확인
-  #
-  # 그 후:
-  # VPC / Subnet / NAT / EIP / IGW /
-  # Route Table / Bastion / Endpoint 삭제
-  # =========================================================
-  core-destroy:
-    name: AWS Core Destroy
-    needs:
-      - guard
-      - rds-destroy
-
-    runs-on: ubuntu-latest
-    environment: dev-infra
-    timeout-minutes: 90
-
-    env:
-      ORIGINAL_VPC_ID: ${{ needs.guard.outputs.vpc_id }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACCOUNT_ID="$(
-            aws sts get-caller-identity \
-              --query Account \
-              --output text
-          )"
-
-          test "${ACCOUNT_ID}" = "${AWS_ACCOUNT_ID}"
-
-      - name: Wait for load balancer cleanup
-        if: ${{ needs.guard.outputs.vpc_id != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          DEADLINE=$(( $(date +%s) + 900 ))
-
-          while :; do
-
-            LBS="$(
-              aws elbv2 describe-load-balancers \
-                --region "${AWS_REGION_FIXED}" \
-                --query "LoadBalancers[?VpcId=='${ORIGINAL_VPC_ID}'].LoadBalancerArn" \
-                --output text
-            )"
-
-            if [[ -z "${LBS}" ]]; then
-
-              echo "No load balancers remain in ${ORIGINAL_VPC_ID}."
-              break
-
-            fi
-
-            echo "Waiting for load balancers to disappear:"
-            echo "${LBS}"
-
-            if (( $(date +%s) >= DEADLINE )); then
-
-              echo "Load balancers still exist."
-              echo "Refusing to start core destroy."
-
+          wait_cluster_absent() {
+            local resource=$1 timeout_seconds=$2
+            local deadline=$(( $(date +%s) + timeout_seconds ))
+            local current
+            while :; do
+              current=$(kubectl get "$resource" --ignore-not-found -o name)
+              [[ -z "$current" ]] && return 0
+              (( $(date +%s) < deadline )) || {
+                echo "Timed out waiting for $resource deletion: $current" >&2
+                return 1
+              }
+              sleep 10
+            done
+          }
+
+          # Stop Argo CD before deleting resources so it cannot recreate them.
+          if [[ -n "$(kubectl get namespace "$ARGO_NAMESPACE" --ignore-not-found -o name)" ]]; then
+            mapfile -t controllers < <(
+              kubectl -n "$ARGO_NAMESPACE" get statefulset \
+                -l app.kubernetes.io/name=argocd-application-controller \
+                --ignore-not-found -o name
+            )
+            ((${#controllers[@]} <= 1)) || {
+              echo "Expected at most one Argo CD application-controller: ${controllers[*]}" >&2
               exit 1
-
-            fi
-
-            sleep 10
-
-          done
-
-      - name: Recheck DR dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          DMS_INSTANCE="$(
-            aws dms describe-replication-instances \
-              --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" \
-              --output text
-          )"
-
-          DMS_SUBNET_GROUP="$(
-            aws dms describe-replication-subnet-groups \
-              --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" \
-              --output text
-          )"
-
-          [[ -z "${DMS_INSTANCE}" ]]
-          [[ -z "${DMS_SUBNET_GROUP}" ]]
-
-          if [[ -n "${ORIGINAL_VPC_ID}" ]]; then
-
-            VPN_GWS="$(
-              aws ec2 describe-vpn-gateways \
-                --filters \
-                  "Name=attachment.vpc-id,Values=${ORIGINAL_VPC_ID}" \
-                  "Name=attachment.state,Values=attaching,attached,detaching" \
-                --query 'VpnGateways[].VpnGatewayId' \
-                --output text
-            )"
-
-            [[ -z "${VPN_GWS}" ]]
-
-          fi
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Init AWS Core
-        working-directory: aws-core
-        run: terraform init -input=false
-
-      - name: Plan AWS Core destroy
-        working-directory: aws-core
-        run: |
-          terraform plan \
-            -destroy \
-            -input=false \
-            -lock-timeout=5m \
-            -out=tfplan
-
-      - name: Show AWS Core destroy plan
-        working-directory: aws-core
-        run: terraform show -no-color tfplan
-
-      - name: Destroy AWS Core
-        working-directory: aws-core
-        run: |
-          terraform apply \
-            -input=false \
-            -lock-timeout=5m \
-            tfplan
-
-      - name: Verify VPC deletion
-        if: ${{ needs.guard.outputs.vpc_id != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for _ in {1..90}; do
-
-            STATE="$(
-              aws ec2 describe-vpcs \
-                --vpc-ids "${ORIGINAL_VPC_ID}" \
-                --region "${AWS_REGION_FIXED}" \
-                --query 'Vpcs[0].State' \
-                --output text \
-                2>/dev/null || true
-            )"
-
-            if [[ -z "${STATE}" || "${STATE}" == "None" ]]; then
-
-              echo "${ORIGINAL_VPC_ID} is deleted."
-              exit 0
-
-            fi
-
-            echo "Waiting for VPC deletion: ${STATE}"
-
-            sleep 10
-
-          done
-
-          echo "${ORIGINAL_VPC_ID} still exists after timeout."
-          exit 1
-
-
-  # =========================================================
-  # 6. FINAL VERIFICATION
-  # =========================================================
-  verify:
-    name: Final Verification
-    needs:
-      - guard
-      - core-destroy
-
-    runs-on: ubuntu-latest
-    environment: dev-infra
-    timeout-minutes: 15
-
-    env:
-      ORIGINAL_VPC_ID: ${{ needs.guard.outputs.vpc_id }}
-
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Verify deleted workload infrastructure
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FAILED=0
-
-          # -------------------------
-          # EKS
-          # -------------------------
-          if aws eks describe-cluster \
-            --name boa-eks \
-            --region "${AWS_REGION_FIXED}" \
-            >/dev/null 2>&1
-          then
-
-            echo "ERROR: boa-eks still exists."
-            FAILED=1
-
-          else
-
-            echo "OK: boa-eks absent."
-
-          fi
-
-          # -------------------------
-          # RDS
-          # -------------------------
-          RDS="$(
-            aws rds describe-db-instances \
-              --region "${AWS_REGION_FIXED}" \
-              --query "DBInstances[?DBInstanceIdentifier=='boa-postgres'].DBInstanceIdentifier" \
-              --output text
-          )"
-
-          if [[ -n "${RDS}" ]]; then
-
-            echo "ERROR: boa-postgres still exists."
-            FAILED=1
-
-          else
-
-            echo "OK: boa-postgres absent."
-
-          fi
-
-          # -------------------------
-          # Valkey
-          # -------------------------
-          CACHE="$(
-            aws elasticache describe-serverless-caches \
-              --region "${AWS_REGION_FIXED}" \
-              --query "ServerlessCaches[?ServerlessCacheName=='boa-valkey'].ServerlessCacheName" \
-              --output text
-          )"
-
-          if [[ -n "${CACHE}" ]]; then
-
-            echo "ERROR: boa-valkey still exists."
-            FAILED=1
-
-          else
-
-            echo "OK: boa-valkey absent."
-
-          fi
-
-          # -------------------------
-          # VPC
-          # -------------------------
-          if [[ -n "${ORIGINAL_VPC_ID}" ]]; then
-
-            VPC="$(
-              aws ec2 describe-vpcs \
-                --vpc-ids "${ORIGINAL_VPC_ID}" \
-                --region "${AWS_REGION_FIXED}" \
-                --query 'Vpcs[].VpcId' \
-                --output text \
-                2>/dev/null || true
-            )"
-
-            if [[ -n "${VPC}" ]]; then
-
-              echo "ERROR: ${ORIGINAL_VPC_ID} still exists."
-              FAILED=1
-
+            }
+            if ((${#controllers[@]} == 1)); then
+              controller_replicas=$(kubectl -n "$ARGO_NAMESPACE" get "${controllers[0]}" \
+                -o jsonpath='{.spec.replicas}')
+              [[ "$controller_replicas" =~ ^[0-9]+$ ]] || {
+                echo "Invalid Argo CD application-controller replica count: $controller_replicas" >&2
+                exit 1
+              }
+              {
+                echo "ARGOCD_RESTORE_REQUIRED=true"
+                echo "ARGOCD_CONTROLLER_NAMESPACE=$ARGO_NAMESPACE"
+                echo "ARGOCD_CONTROLLER_RESOURCE=${controllers[0]}"
+                echo "ARGOCD_CONTROLLER_REPLICAS=$controller_replicas"
+              } >> "$GITHUB_ENV"
+              kubectl -n "$ARGO_NAMESPACE" scale "${controllers[0]}" --replicas=0
+              deadline=$(( $(date +%s) + 300 ))
+              while :; do
+                pods=$(kubectl -n "$ARGO_NAMESPACE" get pod \
+                  -l app.kubernetes.io/name=argocd-application-controller \
+                  --ignore-not-found -o name)
+                [[ -z "$pods" ]] && break
+                (( $(date +%s) < deadline )) || {
+                  echo "Timed out waiting for Argo CD application-controller pods: $pods" >&2
+                  exit 1
+                }
+                sleep 10
+              done
             else
-
-              echo "OK: ${ORIGINAL_VPC_ID} absent."
-
+              echo "Argo CD application-controller is already absent."
             fi
-
+          else
+            echo "Argo CD namespace is already absent."
           fi
 
-          test "${FAILED}" -eq 0
+          # Delete only this project's application Ingress.
+          if [[ -n "$(kubectl get namespace "$APP_NAMESPACE" --ignore-not-found -o name)" ]]; then
+            kubectl -n "$APP_NAMESPACE" delete "ingress/$APP_INGRESS" \
+              --ignore-not-found --wait=false
+            wait_namespaced_absent "$APP_NAMESPACE" "ingress/$APP_INGRESS" 900
+          else
+            echo "$APP_NAMESPACE namespace is already absent."
+          fi
 
-      - name: Show preserved bootstrap resources
+          # Delete only the Terraform ops target group's binding.
+          if [[ -n "$(kubectl get crd targetgroupbindings.elbv2.k8s.aws --ignore-not-found -o name)" ]] && \
+             [[ -n "$(kubectl get namespace "$ARGO_NAMESPACE" --ignore-not-found -o name)" ]]; then
+            kubectl -n "$ARGO_NAMESPACE" delete "targetgroupbinding/$ARGO_TGB" \
+              --ignore-not-found --wait=false
+            wait_namespaced_absent "$ARGO_NAMESPACE" "targetgroupbinding/$ARGO_TGB" 900
+          else
+            echo "TargetGroupBinding CRD or argocd namespace is already absent."
+          fi
+
+          # Capture the controller-created profile before EC2NodeClass finalization.
+          instance_profile=""
+          if [[ -n "$(kubectl get crd ec2nodeclasses.karpenter.k8s.aws --ignore-not-found -o name)" ]]; then
+            instance_profile=$(kubectl get "ec2nodeclass/$KARPENTER_NODECLASS" \
+              --ignore-not-found -o jsonpath='{.status.instanceProfile}')
+            instance_profile=${instance_profile##*/}
+          fi
+
+          # Keep Karpenter alive while it drains and terminates only the default pool.
+          if [[ -n "$(kubectl get crd nodepools.karpenter.sh --ignore-not-found -o name)" ]]; then
+            kubectl delete "nodepool/$KARPENTER_NODEPOOL" --ignore-not-found --wait=false
+
+            if [[ -n "$(kubectl get crd nodeclaims.karpenter.sh --ignore-not-found -o name)" ]]; then
+              kubectl delete nodeclaims.karpenter.sh \
+                -l "karpenter.sh/nodepool=$KARPENTER_NODEPOOL" \
+                --ignore-not-found --wait=false
+              deadline=$(( $(date +%s) + 1200 ))
+              while :; do
+                claims=$(kubectl get nodeclaims.karpenter.sh \
+                  -l "karpenter.sh/nodepool=$KARPENTER_NODEPOOL" -o name)
+                [[ -z "$claims" ]] && break
+                (( $(date +%s) < deadline )) || {
+                  echo "Timed out waiting for project NodeClaims: $claims" >&2
+                  exit 1
+                }
+                sleep 10
+              done
+            fi
+
+            wait_cluster_absent "nodepool/$KARPENTER_NODEPOOL" 300
+          else
+            echo "Karpenter NodePool CRD is already absent."
+          fi
+
+          if [[ -n "$(kubectl get crd ec2nodeclasses.karpenter.k8s.aws --ignore-not-found -o name)" ]]; then
+            kubectl delete "ec2nodeclass/$KARPENTER_NODECLASS" \
+              --ignore-not-found --wait=false
+            wait_cluster_absent "ec2nodeclass/$KARPENTER_NODECLASS" 600
+          else
+            echo "Karpenter EC2NodeClass CRD is already absent."
+          fi
+
+          # Do not destroy aws-eks-platform until controller-owned AWS dependencies
+          # for the exact application stack and Karpenter pool are gone.
+          deadline=$(( $(date +%s) + 1200 ))
+          while :; do
+            remaining=0
+
+            app_albs=$(aws resourcegroupstaggingapi get-resources \
+              --region "$AWS_REGION" \
+              --resource-type-filters elasticloadbalancing:loadbalancer \
+              --tag-filters "Key=ingress.k8s.aws/stack,Values=$APP_STACK" \
+              --query 'ResourceTagMappingList[].ResourceARN' --output text)
+            app_target_groups=$(aws resourcegroupstaggingapi get-resources \
+              --region "$AWS_REGION" \
+              --resource-type-filters elasticloadbalancing:targetgroup \
+              --tag-filters "Key=ingress.k8s.aws/stack,Values=$APP_STACK" \
+              --query 'ResourceTagMappingList[].ResourceARN' --output text)
+            app_security_groups=$(aws resourcegroupstaggingapi get-resources \
+              --region "$AWS_REGION" \
+              --resource-type-filters ec2:security-group \
+              --tag-filters "Key=ingress.k8s.aws/stack,Values=$APP_STACK" \
+              --query 'ResourceTagMappingList[].ResourceARN' --output text)
+            app_enis=$(aws ec2 describe-network-interfaces \
+              --region "$AWS_REGION" \
+              --filters 'Name=description,Values=*k8s-bankofan-boaingr*' \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)
+            karpenter_instances=$(aws ec2 describe-instances \
+              --region "$AWS_REGION" \
+              --filters \
+                'Name=tag:Name,Values=boa-eks-karpenter-node' \
+                'Name=tag:Project,Values=boa' \
+                'Name=tag:ManagedBy,Values=karpenter' \
+                'Name=instance-state-name,Values=pending,running,stopping,shutting-down' \
+              --query 'Reservations[].Instances[].InstanceId' --output text)
+
+            for value in "$app_albs" "$app_target_groups" "$app_security_groups" "$app_enis" "$karpenter_instances"; do
+              if [[ -n "$value" && "$value" != "None" ]]; then
+                echo "Waiting for controller-owned AWS dependency: $value"
+                remaining=1
+              fi
+            done
+
+            if [[ -n "$instance_profile" ]]; then
+              if profile_output=$(aws iam get-instance-profile \
+                --instance-profile-name "$instance_profile" \
+                --query 'InstanceProfile.Arn' --output text 2>&1); then
+                echo "Waiting for Karpenter instance profile: $profile_output"
+                remaining=1
+              elif grep -q 'NoSuchEntity' <<<"$profile_output"; then
+                instance_profile=""
+              else
+                echo "$profile_output" >&2
+                exit 1
+              fi
+            fi
+
+            (( remaining == 0 )) && break
+            (( $(date +%s) < deadline )) || {
+              echo "Controller-owned AWS dependencies remain; refusing Terraform destroy." >&2
+              exit 1
+            }
+            sleep 15
+          done
+
+      - name: Preflight all root destroy plans
         shell: bash
         run: |
           set -euo pipefail
+          roots=(aws-db-bootstrap)
+          if [[ "${{ steps.eks.outputs.exists }}" == "true" ]]; then
+            roots+=(aws-eks-platform)
+          fi
+          roots+=(aws-eks aws-ops aws-cache aws-rds aws-core)
+          if [[ "${{ inputs.full_teardown }}" == "true" ]]; then
+            roots+=(persistent)
+          fi
+          for root in "${roots[@]}"; do
+            bash scripts/terraform-aws-root.sh plan-destroy "$root"
+          done
 
-          echo "Terraform state bucket:"
+      - name: Destroy DB bootstrap binding
+        shell: bash
+        run: bash scripts/terraform-aws-root.sh apply-destroy aws-db-bootstrap
 
-          aws s3api head-bucket \
-            --bucket "${STATE_BUCKET}"
+      - name: Destroy EKS platform
+        if: ${{ steps.eks.outputs.exists == 'true' }}
+        shell: bash
+        run: bash scripts/terraform-aws-root.sh apply-destroy aws-eks-platform
 
-          echo "  ${STATE_BUCKET}"
+      - name: Destroy EKS AWS infrastructure
+        shell: bash
+        run: bash scripts/terraform-aws-root.sh apply-destroy aws-eks
 
-          echo
-          echo "Console-managed ECR repositories:"
+      - name: Destroy ops, cache, RDS, and core
+        shell: bash
+        run: |
+          set -euo pipefail
+          for root in aws-ops aws-cache aws-rds; do
+            bash scripts/terraform-aws-root.sh apply-destroy "$root"
+          done
 
-          aws ecr describe-repositories \
-            --region "${AWS_REGION_FIXED}" \
-            --query "repositories[?starts_with(repositoryName, 'boa-')].repositoryName" \
-            --output table || true
+          deadline=$(( $(date +%s) + 900 ))
+          while [[ -n "$ORIGINAL_VPC_ID" ]]; do
+            lbs=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$ORIGINAL_VPC_ID'].LoadBalancerArn" --output text)
+            [[ -z "$lbs" ]] && break
+            (( $(date +%s) < deadline )) || {
+              echo "Load balancers still remain: $lbs" >&2
+              exit 1
+            }
+            sleep 10
+          done
 
-          echo
-          echo "Preserved persistent Secrets:"
+          bash scripts/terraform-aws-root.sh apply-destroy aws-core
 
-          aws secretsmanager list-secrets \
-            --region "${AWS_REGION_FIXED}" \
-            --query "SecretList[?starts_with(Name, '/boa/jwt/') || starts_with(Name, '/boa/database/')].Name" \
-            --output table || true
+      - name: Explicit full teardown of persistent resources
+        if: ${{ inputs.full_teardown == true }}
+        shell: bash
+        run: bash scripts/terraform-aws-root.sh apply-destroy persistent
 
-            
+      - name: Verify routine infrastructure deletion
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME" >/dev/null 2>&1 && failed=1 || true
+          [[ -z "$(aws rds describe-db-instances --query "DBInstances[?DBInstanceIdentifier=='boa-postgres'].DBInstanceIdentifier" --output text)" ]] || failed=1
+          [[ -z "$(aws elasticache describe-serverless-caches --query "ServerlessCaches[?ServerlessCacheName=='boa-valkey'].ServerlessCacheName" --output text)" ]] || failed=1
+          if [[ -n "$ORIGINAL_VPC_ID" ]]; then
+            [[ -z "$(aws ec2 describe-vpcs --vpc-ids "$ORIGINAL_VPC_ID" --query 'Vpcs[].VpcId' --output text 2>/dev/null || true)" ]] || failed=1
+          fi
+          [[ "$failed" -eq 0 ]]
+
+      - name: Restore Argo CD reconciliation when EKS remains
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ "${ARGOCD_RESTORE_REQUIRED:-false}" != "true" ]]; then
+            echo "Argo CD application-controller did not exist before pre-clean; restore is not required."
+            exit 0
+          fi
+
+          if ! aws eks describe-cluster \
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER_NAME" >/dev/null 2>&1; then
+            echo "EKS cluster is absent; skipping Argo CD restore."
+            exit 0
+          fi
+
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          kubectl --request-timeout=20s get --raw='/readyz' >/dev/null
+
+          [[ "${ARGOCD_CONTROLLER_REPLICAS:-}" =~ ^[0-9]+$ ]] || {
+            echo "Stored Argo CD replica count is missing or invalid." >&2
+            exit 1
+          }
+
+          kubectl -n "$ARGOCD_CONTROLLER_NAMESPACE" scale \
+            "$ARGOCD_CONTROLLER_RESOURCE" \
+            --replicas="$ARGOCD_CONTROLLER_REPLICAS"
+          kubectl -n "$ARGOCD_CONTROLLER_NAMESPACE" rollout status \
+            "$ARGOCD_CONTROLLER_RESOURCE" \
+            --timeout=5m
+
+          if (( ARGOCD_CONTROLLER_REPLICAS > 0 )); then
+            kubectl -n "$ARGOCD_CONTROLLER_NAMESPACE" wait \
+              --for=condition=Ready pod \
+              -l app.kubernetes.io/name=argocd-application-controller \
+              --timeout=5m
+          else
+            pods=$(kubectl -n "$ARGOCD_CONTROLLER_NAMESPACE" get pod \
+              -l app.kubernetes.io/name=argocd-application-controller \
+              --ignore-not-found -o name)
+            [[ -z "$pods" ]] || {
+              echo "Argo CD controller was originally scaled to zero but pods remain: $pods" >&2
+              exit 1
+            }
+          fi
+
+      - name: Restore baseline EKS access CIDRs when the cluster remains
+        if: ${{ always() }}
+        shell: bash
+        run: bash scripts/eks-runner-access.sh restore

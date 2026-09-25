@@ -1,10 +1,9 @@
 provider "aws" {
-  # HARD-CODED: 배포 대상 리전에 맞게 변경한다.
-  region = "ap-northeast-2"
+  region = module.environment.aws_region
 
   default_tags {
     tags = {
-      Project   = "boa"
+      Project   = module.environment.project_name
       Component = "db-bootstrap"
       ManagedBy = "terraform"
       Repo      = "AWS-TEAM1-DEV/Infra"

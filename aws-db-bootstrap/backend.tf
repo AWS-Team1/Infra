@@ -1,11 +1,11 @@
 terraform {
   backend "s3" {
-    # HARD-CODED: 다른 계정에서는 state bucket/region/key를 변경한다.
-    bucket  = "boa-terraform-state-6416"
-    key     = "aws/db-bootstrap/terraform.tfstate"
-    region  = "ap-northeast-2"
-    encrypt = true
-
+    # Embedded bootstrap values make a fresh Code Server clone work with
+    # ordinary terraform init; CI supplies the same env/backend.hcl values.
+    bucket       = "boa-terraform-state-6416"
+    key          = "aws/db-bootstrap/terraform.tfstate"
+    region       = "ap-northeast-2"
+    encrypt      = true
     use_lockfile = true
   }
 }
