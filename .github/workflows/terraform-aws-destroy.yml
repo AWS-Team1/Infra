@@ -43,6 +43,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
     outputs:
       vpc_id: ${{ steps.core.outputs.vpc_id }}
+      destroy_core: ${{ steps.core_guard.outputs.destroy_core }}
     steps:
       - name: Require explicit confirmation
         shell: bash
@@ -73,27 +74,28 @@ jobs:
           vpc_id=$(terraform -chdir=aws-core output -raw vpc_id 2>/dev/null || true)
           echo "vpc_id=$vpc_id" >> "$GITHUB_OUTPUT"
 
-      - name: Block destroy while DMS or VPN resources remain
+      - name: Determine whether core can be destroyed
+        id: core_guard
         shell: bash
         env:
           VPC_ID: ${{ steps.core.outputs.vpc_id }}
         run: |
           set -euo pipefail
-          blocked=0
+          destroy_core=true
           dms_instance=$(aws dms describe-replication-instances --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" --output text)
           dms_subnet_group=$(aws dms describe-replication-subnet-groups --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" --output text)
           if [[ -n "$dms_instance" || -n "$dms_subnet_group" ]]; then
-            echo "DMS resources remain; run the DR/DMS teardown first." >&2
-            blocked=1
+            echo "DMS resources remain; aws-core will be preserved."
+            destroy_core=false
           fi
           if [[ -n "$VPC_ID" ]]; then
             vpn_gateways=$(aws ec2 describe-vpn-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" "Name=attachment.state,Values=attaching,attached,detaching" --query 'VpnGateways[].VpnGatewayId' --output text)
             if [[ -n "$vpn_gateways" ]]; then
-              echo "VPN gateways remain: $vpn_gateways" >&2
-              blocked=1
+              echo "VPN gateways remain: $vpn_gateways; aws-core will be preserved."
+              destroy_core=false
             fi
           fi
-          [[ "$blocked" -eq 0 ]]
+          echo "destroy_core=$destroy_core" >> "$GITHUB_OUTPUT"
 
   destroy:
     name: Sequential AWS Destroy
@@ -104,6 +106,7 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ORIGINAL_VPC_ID: ${{ needs.guard.outputs.vpc_id }}
+      DESTROY_CORE: ${{ needs.guard.outputs.destroy_core }}
     steps:
       - name: Checkout Infra
         uses: actions/checkout@v4
@@ -359,7 +362,12 @@ jobs:
           if [[ "${{ steps.eks.outputs.exists }}" == "true" ]]; then
             roots+=(aws-eks-platform)
           fi
-          roots+=(aws-eks aws-ops aws-cache aws-rds aws-core)
+          roots+=(aws-eks aws-ops aws-cache aws-rds)
+          if [[ "$DESTROY_CORE" == "true" ]]; then
+            roots+=(aws-core)
+          else
+            echo "aws-core preserved because DMS/VPN dependency remains"
+          fi
           if [[ "${{ inputs.full_teardown }}" == "true" ]]; then
             roots+=(persistent)
           fi
@@ -380,7 +388,7 @@ jobs:
         shell: bash
         run: bash scripts/terraform-aws-root.sh apply-destroy aws-eks
 
-      - name: Destroy ops, cache, RDS, and core
+      - name: Destroy ops, cache, RDS, and conditionally core
         shell: bash
         run: |
           set -euo pipefail
@@ -399,7 +407,11 @@ jobs:
             sleep 10
           done
 
-          bash scripts/terraform-aws-root.sh apply-destroy aws-core
+          if [[ "$DESTROY_CORE" == "true" ]]; then
+            bash scripts/terraform-aws-root.sh apply-destroy aws-core
+          else
+            echo "aws-core preserved because DMS/VPN dependency remains"
+          fi
 
       - name: Explicit full teardown of persistent resources
         if: ${{ inputs.full_teardown == true }}
@@ -415,7 +427,18 @@ jobs:
           [[ -z "$(aws rds describe-db-instances --query "DBInstances[?DBInstanceIdentifier=='boa-postgres'].DBInstanceIdentifier" --output text)" ]] || failed=1
           [[ -z "$(aws elasticache describe-serverless-caches --query "ServerlessCaches[?ServerlessCacheName=='boa-valkey'].ServerlessCacheName" --output text)" ]] || failed=1
           if [[ -n "$ORIGINAL_VPC_ID" ]]; then
-            [[ -z "$(aws ec2 describe-vpcs --vpc-ids "$ORIGINAL_VPC_ID" --query 'Vpcs[].VpcId' --output text 2>/dev/null || true)" ]] || failed=1
+            current_vpc_id=$(aws ec2 describe-vpcs --vpc-ids "$ORIGINAL_VPC_ID" --query 'Vpcs[].VpcId' --output text 2>/dev/null || true)
+            if [[ "$DESTROY_CORE" == "true" ]]; then
+              [[ -z "$current_vpc_id" ]] || {
+                echo "Core VPC still exists after aws-core destroy: $current_vpc_id" >&2
+                failed=1
+              }
+            else
+              [[ "$current_vpc_id" == "$ORIGINAL_VPC_ID" ]] || {
+                echo "Core VPC was expected to remain but was not found: $ORIGINAL_VPC_ID" >&2
+                failed=1
+              }
+            fi
           fi
           [[ "$failed" -eq 0 ]]
 
