@@ -9,7 +9,7 @@ default_tags = {
   Project   = "boa"
   Component = "net-link"
   ManagedBy = "terraform"
-  Repo      = "AWS-TEAM1-DEV/Infra"
+  Repo      = "AWS-Team1/Infra"
 }
 
 remote_state_bucket    = "boa-terraform-state-6416"
