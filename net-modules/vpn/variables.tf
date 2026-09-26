@@ -10,7 +10,7 @@ variable "aws_vpc_id" {
 }
 
 # BGP 로 배운 GCP 대역을 전파할 라우트 테이블.
-# 프라이빗 라우트 테이블을 넣는다 — DMS 복제 인스턴스가 거기 있다.
+# DMS용 프라이빗 라우트 테이블과 bastion용 퍼블릭 라우트 테이블을 넣는다.
 variable "aws_route_table_ids" {
   description = "경로 전파를 켤 AWS 라우트 테이블 ID 목록"
   type        = list(string)
@@ -19,7 +19,6 @@ variable "aws_route_table_ids" {
 variable "aws_asn" {
   description = "AWS VGW 의 BGP ASN. GCP Cloud Router ASN 과 달라야 한다"
   type        = number
-  default     = 64512
 }
 
 # ---------- GCP ----------
@@ -40,7 +39,26 @@ variable "gcp_router_name" {
 variable "gcp_asn" {
   description = "GCP Cloud Router 의 BGP ASN. gcp-core 의 cloud_router_asn 과 같아야 한다"
   type        = number
-  default     = 64514
+}
+
+variable "gcp_advertised_groups" {
+  description = "CUSTOM BGP 광고에 포함할 경로 그룹"
+  type        = list(string)
+}
+
+variable "gcp_advertised_ip_ranges" {
+  description = "모든 BGP 피어에서 GCP 서브넷과 함께 광고할 추가 IPv4 CIDR 목록(예: Cloud SQL PSA /32)"
+  type = list(object({
+    range       = string
+    description = string
+  }))
+
+  validation {
+    condition = alltrue([
+      for item in var.gcp_advertised_ip_ranges : can(cidrnetmask(item.range))
+    ])
+    error_message = "gcp_advertised_ip_ranges의 range는 유효한 IPv4 CIDR이어야 합니다."
+  }
 }
 
 # ---------- 터널 ----------
@@ -50,11 +68,16 @@ variable "gcp_asn" {
 variable "tunnel_inside_cidrs" {
   description = "VPN 연결별 터널 내부 /30 CIDR 2개씩"
   type        = map(list(string))
+}
 
-  default = {
-    "0" = ["169.254.10.0/30", "169.254.10.4/30"]
-    "1" = ["169.254.10.8/30", "169.254.10.12/30"]
-  }
+variable "ike_version" {
+  description = "GCP VPN 터널 IKE 버전"
+  type        = number
+}
+
+variable "advertised_route_priority" {
+  description = "GCP BGP advertised route priority(MED)"
+  type        = number
 }
 
 # 사전 공유 키. terraform.tfvars 로 넘기고 저장소에 커밋하지 않는다.

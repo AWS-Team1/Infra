@@ -39,6 +39,17 @@ resource "aws_db_parameter_group" "main" {
     apply_method = "pending-reboot"
   }
 
+  # GCP 보안 진단(Allows unencrypted direct connections) 대응 — GCP Cloud SQL(gcp-modules/cloudsql/main.tf)
+  # 쪽과 통일. 이것도 rds.logical_replication 과 같은 정적 파라미터라 반영되려면
+  # 재부팅이 필요하다(Multi-AZ 페일오버 동반 가능) — apply만으로는 안 켜진다.
+  # ledger/accounts 앱 쪽 JDBC/psycopg2 URL에 sslmode=require 를 같이 넣어둬야
+  # 이 값이 켜진 뒤에도 연결이 끊기지 않는다(gitops/03_manifests/overlays/eks/{ledger,accounts}).
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
+  }
+
   tags = {
     Name = "${var.project_name}-postgres16"
   }

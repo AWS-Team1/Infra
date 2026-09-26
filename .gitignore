@@ -7,6 +7,9 @@
 *.tfvars
 *.tfvars.json
 
+# net-link VPN 설정은 실제 구축 입력으로 버전 관리한다.
+!net-link/terraform.tfvars
+
 # Local CLI and plan output
 .terraformrc
 terraform.rc
