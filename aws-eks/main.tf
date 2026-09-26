@@ -49,6 +49,7 @@ module "eks" {
   # GitHub Actions Terraform Role만 EKS 관리자 권한을 가진다.
   cluster_admin_role_arns = [
     var.github_terraform_role_arn,
+    var.code_server_role_arn
   ]
 
   console_user_group_name = var.console_user_group_name
