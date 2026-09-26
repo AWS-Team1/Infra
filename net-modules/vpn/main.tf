@@ -41,8 +41,9 @@ resource "aws_vpn_gateway" "main" {
   }
 }
 
-# 프라이빗 라우트 테이블이 BGP 로 배운 GCP 대역을 자동으로 받게 한다.
-# 이게 없으면 DMS 복제 인스턴스가 Cloud SQL 로 가는 경로를 모른다.
+# 선택한 라우트 테이블이 BGP 로 배운 GCP 대역을 자동으로 받게 한다.
+# 프라이빗 라우트 테이블은 DMS에, 퍼블릭 라우트 테이블은 bastion에 필요하다.
+# 기존 Terraform 상태 주소를 유지하기 위해 리소스 이름은 private 그대로 둔다.
 resource "aws_vpn_gateway_route_propagation" "private" {
 
   for_each = toset(var.aws_route_table_ids)
@@ -154,7 +155,7 @@ resource "google_compute_vpn_tunnel" "main" {
   peer_external_gateway_interface = each.value.peer_if
 
   shared_secret = local.tunnel_addrs[each.key].psk
-  ike_version   = 2
+  ike_version   = var.ike_version
 }
 
 # BGP 세션. AWS 가 배정한 터널 내부 /30 을 그대로 쓴다.
@@ -180,5 +181,19 @@ resource "google_compute_router_peer" "main" {
   peer_ip_address = local.tunnel_addrs[each.key].vgw_inside
   peer_asn        = var.aws_asn
 
-  advertised_route_priority = 100
+  advertised_route_priority = var.advertised_route_priority
+
+  # DEFAULT 광고에는 VPC 서브넷만 포함되고 PSA의 Cloud SQL 주소는 빠진다.
+  # 기존 서브넷은 ALL_SUBNETS로 유지하면서 Cloud SQL /32를 함께 광고한다.
+  advertise_mode    = "CUSTOM"
+  advertised_groups = var.gcp_advertised_groups
+
+  dynamic "advertised_ip_ranges" {
+    for_each = var.gcp_advertised_ip_ranges
+
+    content {
+      range       = advertised_ip_ranges.value.range
+      description = advertised_ip_ranges.value.description
+    }
+  }
 }
