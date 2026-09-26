@@ -3,7 +3,13 @@ output "cache_endpoint" {
 }
 
 output "secret_arn" {
-  value = module.elasticache.secret_arn
+  description = "Terraform-managed Valkey credentials Secret ARN"
+  value       = aws_secretsmanager_secret.valkey_credentials.arn
+}
+
+output "runtime_secret_arn" {
+  description = "Terraform-managed Valkey runtime endpoint Secret ARN"
+  value       = aws_secretsmanager_secret.valkey_runtime.arn
 }
 
 output "user_group_id" {

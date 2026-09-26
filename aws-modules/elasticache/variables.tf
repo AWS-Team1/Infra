@@ -13,6 +13,18 @@ variable "user_name" {
   type = string
 }
 
+# Terraform-operation-only password consumed by ElastiCache write-only fields.
+variable "user_password" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+# Rotates the ElastiCache password with the matching Secrets Manager version.
+variable "credentials_version" {
+  type = number
+}
+
 # ElastiCache가 배치될 Private Subnet
 variable "subnet_ids" {
   type = list(string)

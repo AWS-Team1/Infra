@@ -19,6 +19,10 @@ Serverless Valkey와 운영용 ALB, Tokyo 리전(`ap-northeast-1`)의 DR state b
 | `aws-eks-platform` | `aws/eks-platform/terraform.tfstate` | AWS Load Balancer Controller Helm/SA·CSI RBAC | kubernetes · helm | core · eks |
 | `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | DB bootstrap IAM·Pod Identity | aws | eks · rds · persistent Secret 조회 |
 
+Valkey의 credentials/runtime Secret 계약, ephemeral/write-only 비밀번호 전달과 기존
+`aws-cache` state의 선언형 migration은
+[`docs/VALKEY_RELIFECYCLE_INTEGRATION.md`](docs/VALKEY_RELIFECYCLE_INTEGRATION.md)를 따릅니다.
+
 비민감 공통 입력은 local module인 `env/main.tf`가 단일 기준입니다. 모든 root가 이
 모듈을 직접 읽으므로 GitHub Actions와 Code Server의 일반 `terraform apply`가 같은 값을
 사용합니다. S3 backend는 `boa-terraform-state-6416` 버킷과 `use_lockfile = true`를
