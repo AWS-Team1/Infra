@@ -9,7 +9,7 @@ default_tags = {
   Project   = "boa"
   Component = "net-link"
   ManagedBy = "terraform"
-  Repo      = "AWS-TEAM1-DEV/Infra"
+  Repo      = "AWS-Team1/Infra"
 }
 
 # data.terraform_remote_state 조회 위치
