@@ -66,21 +66,9 @@ variable "audit_findings_retention_days" {
 # ---------------------------------------------------------
 
 variable "enable_telemetry_archive" {
-  description = "false 면 S3 버킷과 수집기의 s3 쓰기 권한을 만들지 않는다"
+  description = "false 면 persistent root가 소유하는 S3 버킷에 수집기 쓰기 권한을 주지 않는다"
   type        = bool
   default     = true
-}
-
-variable "telemetry_archive_transition_days" {
-  description = "STANDARD → STANDARD_IA 전환 일수"
-  type        = number
-  default     = 30
-}
-
-variable "telemetry_archive_expiration_days" {
-  description = "객체 만료 일수. 0 이면 만료시키지 않는다"
-  type        = number
-  default     = 365
 }
 
 
@@ -105,11 +93,12 @@ variable "custom_data_identifiers" {
   type        = map(string)
 
   default = {
-    # 10자리 계좌번호. 앞뒤가 숫자가 아닐 때만 잡는다.
-    BoaAccountId = "(?<![0-9])[0-9]{10}(?![0-9])"
+    # CloudWatch Logs regex는 lookaround를 지원하지 않는다. 숫자 10자리 후보를
+    # 넓게 탐지하고 실제 로그를 본 뒤 키 이름을 포함하는 패턴으로 좁힌다.
+    BoaAccountId = "[0-9]{10}"
 
-    # 9자리 라우팅번호(LOCAL_ROUTING_NUM).
-    BoaRoutingNumber = "(?<![0-9])[0-9]{9}(?![0-9])"
+    # 9자리 라우팅번호(LOCAL_ROUTING_NUM). 긴 숫자의 부분 문자열도 탐지될 수 있다.
+    BoaRoutingNumber = "[0-9]{9}"
 
     # RS256 JWT. userservice 가 발급하고 5개 서비스가 헤더로 받는다.
     BoaJwtToken = "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"
@@ -152,6 +141,16 @@ variable "grafana_listener_rule_priority" {
 variable "ops_alb_https_listener_arn" {
   description = "aws-ops 가 출력하는 ops ALB 의 HTTPS 리스너 ARN"
   type        = string
+}
+
+variable "ops_alb_security_group_id" {
+  description = "Grafana 3000 egress를 추가할 ops ALB security group"
+  type        = string
+}
+
+variable "private_subnet_cidrs" {
+  description = "Grafana pod target이 위치하는 private subnet CIDR 목록"
+  type        = list(string)
 }
 
 

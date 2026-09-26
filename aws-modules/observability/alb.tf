@@ -59,3 +59,20 @@ resource "aws_lb_listener_rule" "grafana" {
     Name = "${var.project_name}-ops-alb-rule-grafana"
   }
 }
+
+# Keep the existing Argo CD 8080 rule owned by aws-ops and add only the
+# Grafana target/health-check path required by this root.
+resource "aws_vpc_security_group_egress_rule" "grafana" {
+  for_each = toset(var.private_subnet_cidrs)
+
+  security_group_id = var.ops_alb_security_group_id
+  description       = "Grafana targets in ${each.value}"
+  ip_protocol       = "tcp"
+  from_port         = var.grafana_target_port
+  to_port           = var.grafana_target_port
+  cidr_ipv4         = each.value
+
+  tags = {
+    Name = "${var.project_name}-ops-alb-to-grafana"
+  }
+}

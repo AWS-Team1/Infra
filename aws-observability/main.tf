@@ -16,9 +16,9 @@ data "terraform_remote_state" "core" {
   backend = "s3"
 
   config = {
-    bucket = "boa-terraform-state-6416"
+    bucket = module.environment.state_bucket
     key    = "aws/core/terraform.tfstate"
-    region = "ap-northeast-2"
+    region = module.environment.aws_region
   }
 }
 
@@ -26,9 +26,9 @@ data "terraform_remote_state" "eks" {
   backend = "s3"
 
   config = {
-    bucket = "boa-terraform-state-6416"
+    bucket = module.environment.state_bucket
     key    = "aws/eks/terraform.tfstate"
-    region = "ap-northeast-2"
+    region = module.environment.aws_region
   }
 }
 
@@ -36,18 +36,18 @@ data "terraform_remote_state" "ops" {
   backend = "s3"
 
   config = {
-    bucket = "boa-terraform-state-6416"
+    bucket = module.environment.state_bucket
     key    = "aws/ops/terraform.tfstate"
-    region = "ap-northeast-2"
+    region = module.environment.aws_region
   }
 }
 
 module "observability" {
   source = "../aws-modules/observability"
 
-  project_name = "boa"
+  project_name = module.environment.project_name
   cluster_name = data.terraform_remote_state.eks.outputs.cluster_name
-  region       = "ap-northeast-2"
+  region       = module.environment.aws_region
   vpc_id       = data.terraform_remote_state.core.outputs.vpc_id
 
   # gitops 의 03_manifests/base/observability/namespace.yaml 과 일치해야 한다.
@@ -60,52 +60,19 @@ module "observability" {
   application_log_retention_days = 30
   audit_findings_retention_days  = 90
 
-  enable_telemetry_archive          = var.enable_telemetry_archive
-  telemetry_archive_transition_days = 30
-  telemetry_archive_expiration_days = 365
+  enable_telemetry_archive = var.enable_telemetry_archive
 
   enable_log_data_protection = var.enable_log_data_protection
 
   # ops-alb 모듈이 100번대를 ArgoCD 에 쓰고 200번대를 관측성용으로 비워 두었다.
-  grafana_host                   = var.grafana_host
+  grafana_host                   = module.environment.grafana_host
   grafana_target_port            = 3000
   grafana_listener_rule_priority = 200
   ops_alb_https_listener_arn     = data.terraform_remote_state.ops.outputs.ops_alb_https_listener_arn
+  ops_alb_security_group_id      = data.terraform_remote_state.ops.outputs.ops_alb_security_group_id
+  private_subnet_cidrs           = data.terraform_remote_state.core.outputs.private_subnet_cidrs
 
-  secret_path_prefix = "/boa/observability"
-}
-
-
-# ===================================================
-# SECRETS MANAGER — 와탭 라이선스 키 · Grafana 관리자 비밀번호
-# ===================================================
-
-# 값은 Terraform 이 넣지 않는다. 껍데기만 만들고 사람이 콘솔이나 CLI 로 채운다.
-# tfvars 나 state 에 라이선스 키가 들어가지 않게 하려는 것이다 —
-# state 는 S3 에 암호화되어 있지만 plan 출력과 CI 로그에는 남는다.
-#
-# 채우는 명령은 outputs.tf 의 secret_fill_commands 가 그대로 출력한다.
-resource "aws_secretsmanager_secret" "whatap" {
-  name        = "/boa/observability/whatap"
-  description = "WhaTap license keys. Values are set out-of-band, never by Terraform."
-
-  # 실습 환경이라 짧게 둔다. 지운 뒤 같은 이름을 바로 다시 쓸 수 있다.
-  recovery_window_in_days = 0
-
-  tags = {
-    Name = "boa-observability-whatap"
-  }
-}
-
-resource "aws_secretsmanager_secret" "grafana" {
-  name        = "/boa/observability/grafana"
-  description = "Grafana admin credentials. Values are set out-of-band, never by Terraform."
-
-  recovery_window_in_days = 0
-
-  tags = {
-    Name = "boa-observability-grafana"
-  }
+  secret_path_prefix = "/${module.environment.project_name}/observability"
 }
 
 
@@ -116,14 +83,13 @@ resource "aws_secretsmanager_secret" "grafana" {
 # aws-ops 가 argocd 레코드를 소유하는 것과 같은 방식이다.
 # 존은 조회만 하고 만들지 않는다.
 data "aws_route53_zone" "public" {
-  # HARD-CODED: ACM 인증서(*.bespinglobal.site)와 ops ALB Host 조건에 맞는 존이다.
-  name         = "bespinglobal.site."
+  name         = "${module.environment.public_zone_name}."
   private_zone = false
 }
 
 resource "aws_route53_record" "grafana" {
   zone_id = data.aws_route53_zone.public.zone_id
-  name    = var.grafana_host
+  name    = module.environment.grafana_host
   type    = "A"
 
   alias {

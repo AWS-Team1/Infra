@@ -23,11 +23,11 @@ output "data_protection_audit_log_group_name" {
 
 output "telemetry_bucket_name" {
   description = "수집기의 awss3 exporter 에 넣는 버킷 이름. 비활성화하면 빈 문자열"
-  value       = var.enable_telemetry_archive ? aws_s3_bucket.telemetry[0].bucket : ""
+  value       = var.enable_telemetry_archive ? local.telemetry_bucket_name : ""
 }
 
 output "telemetry_bucket_arn" {
-  value = var.enable_telemetry_archive ? aws_s3_bucket.telemetry[0].arn : ""
+  value = var.enable_telemetry_archive ? "arn:${local.partition}:s3:::${local.telemetry_bucket_name}" : ""
 }
 
 

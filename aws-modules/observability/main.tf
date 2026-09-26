@@ -8,7 +8,7 @@
 # 만드는 것
 #   - 로그 그룹 3개 (앱 로그 / 수집기 지표 EMF / 마스킹 감사 기록)
 #   - 로그 그룹의 데이터 보호 정책 (민감정보 마스킹)
-#   - 텔레메트리 장기 보관 S3 버킷
+#   - persistent root가 소유하는 텔레메트리 S3 버킷에 대한 쓰기 권한
 #   - 수집기·Grafana 의 Pod Identity 역할 (iam.tf)
 #   - Grafana 를 ops ALB 에 붙이는 대상 그룹·리스너 규칙 (alb.tf)
 #
@@ -81,10 +81,8 @@ resource "aws_cloudwatch_log_group" "data_protection_audit" {
 # DATA PROTECTION POLICY — 민감정보 마스킹
 # ===================================================
 
-# 마스킹은 "쓰기 시점"이 아니라 "읽기 시점"에 일어난다.
-#   - 원본은 로그 그룹에 그대로 저장된다
-#   - 콘솔·GetLogEvents·Insights 결과에서 ***** 로 가려진다
-#   - logs:Unmask 권한을 가진 주체만 원본을 본다
+# 데이터 보호 정책은 로그를 수집할 때 민감 데이터를 탐지하고 기본 조회에서
+# 마스킹한다. 저장된 원본은 보존되며 logs:Unmask 권한이 있는 주체만 볼 수 있다.
 #
 # 즉 이것은 "저장 안 함"이 아니라 "기본적으로 안 보임"이다. 그래서
 # outputs.tf 가 내보내는 unmask 정책은 어디에도 부착하지 않는다 —
@@ -153,126 +151,4 @@ resource "aws_cloudwatch_log_data_protection_policy" "emf" {
 
   log_group_name  = aws_cloudwatch_log_group.emf.name
   policy_document = jsonencode(local.data_protection_policy)
-}
-
-
-# ===================================================
-# TELEMETRY ARCHIVE — 수집데이터 백업
-# ===================================================
-
-# 와탭은 보존 기간이 제품 정책에 묶여 있고 체험 계정은 더 짧다. 발표 후에도
-# 근거를 남기려면 우리 쪽에 원본이 있어야 한다. 수집기의 awss3 exporter 가
-# 파이프라인 분기로 여기에 같은 데이터를 한 번 더 쓴다.
-#
-# 주의 — 이 버킷에는 마스킹이 걸리지 않는다. 데이터 보호 정책은 CloudWatch Logs
-# 기능이고 S3 에는 적용되지 않는다. 그래서 마스킹은 수집기의 redaction/transform
-# 프로세서에서 한 번 더 해야 한다(gitops 쪽 수집기 설정 참조).
-resource "aws_s3_bucket" "telemetry" {
-  count = var.enable_telemetry_archive ? 1 : 0
-
-  bucket = local.telemetry_bucket_name
-
-  tags = {
-    Name = local.telemetry_bucket_name
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "telemetry" {
-  count = var.enable_telemetry_archive ? 1 : 0
-
-  bucket = aws_s3_bucket.telemetry[0].id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "telemetry" {
-  count = var.enable_telemetry_archive ? 1 : 0
-
-  bucket = aws_s3_bucket.telemetry[0].id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-
-    bucket_key_enabled = true
-  }
-}
-
-# 텔레메트리는 append-only 성격이라 버전 관리가 필요 없다. 다만 실수로 지운 것을
-# 되살릴 수 없으므로, 감사 대상이 되면 Enabled 로 바꾼다.
-resource "aws_s3_bucket_versioning" "telemetry" {
-  count = var.enable_telemetry_archive ? 1 : 0
-
-  bucket = aws_s3_bucket.telemetry[0].id
-
-  versioning_configuration {
-    status = "Suspended"
-  }
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "telemetry" {
-  count = var.enable_telemetry_archive ? 1 : 0
-
-  bucket = aws_s3_bucket.telemetry[0].id
-
-  rule {
-    id     = "tier-and-expire"
-    status = "Enabled"
-
-    filter {}
-
-    transition {
-      days          = var.telemetry_archive_transition_days
-      storage_class = "STANDARD_IA"
-    }
-
-    # 0 이면 만료 규칙을 만들지 않는다.
-    dynamic "expiration" {
-      for_each = var.telemetry_archive_expiration_days > 0 ? [1] : []
-
-      content {
-        days = var.telemetry_archive_expiration_days
-      }
-    }
-
-    # 멀티파트 업로드가 중단되면 조각이 남아 요금이 발생한다.
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
-}
-
-# 평문 HTTP 로는 못 쓰게 한다.
-resource "aws_s3_bucket_policy" "telemetry" {
-  count = var.enable_telemetry_archive ? 1 : 0
-
-  bucket = aws_s3_bucket.telemetry[0].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-
-    Statement = [
-      {
-        Sid       = "DenyInsecureTransport"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = "s3:*"
-
-        Resource = [
-          aws_s3_bucket.telemetry[0].arn,
-          "${aws_s3_bucket.telemetry[0].arn}/*",
-        ]
-
-        Condition = {
-          Bool = {
-            "aws:SecureTransport" = "false"
-          }
-        }
-      }
-    ]
-  })
 }

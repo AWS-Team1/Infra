@@ -73,12 +73,12 @@ output "secret_fill_commands" {
     #    host/port 는 와탭 콘솔의 설치 안내에 표시된 수집 서버 값을 그대로 넣는다
     #    (주석을 \ 뒤에 두면 줄 이음이 끊겨 명령이 두 개로 쪼개진다 — 여기 둔다)
     aws secretsmanager put-secret-value \
-      --secret-id ${aws_secretsmanager_secret.whatap.name} \
+      --secret-id /${module.environment.project_name}/observability/whatap \
       --secret-string '{"kubernetes_license":"<K8S_KEY>","application_license":"<APM_KEY>","host":"<WHATAP_HOST>","port":"<WHATAP_PORT>"}'
 
     # 2) Grafana 관리자 비밀번호
     aws secretsmanager put-secret-value \
-      --secret-id ${aws_secretsmanager_secret.grafana.name} \
+      --secret-id /${module.environment.project_name}/observability/grafana \
       --secret-string "{\"admin_user\":\"admin\",\"admin_password\":\"$(openssl rand -base64 24)\"}"
 
     # 3) unmask 정책이 아무 역할에도 붙어 있지 않은지 확인 — 출력이 비어야 정상

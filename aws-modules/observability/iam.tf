@@ -140,13 +140,13 @@ resource "aws_iam_policy" "collector" {
             "s3:AbortMultipartUpload",
           ]
 
-          Resource = "${aws_s3_bucket.telemetry[0].arn}/*"
+          Resource = "arn:${local.partition}:s3:::${local.telemetry_bucket_name}/*"
         },
         {
           Sid      = "ListTelemetryArchiveBucket"
           Effect   = "Allow"
           Action   = ["s3:ListBucket"]
-          Resource = aws_s3_bucket.telemetry[0].arn
+          Resource = "arn:${local.partition}:s3:::${local.telemetry_bucket_name}"
         },
       ] : []
     )

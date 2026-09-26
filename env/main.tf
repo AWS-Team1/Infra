@@ -10,6 +10,7 @@ locals {
   public_zone_name                 = "bespinglobal.site"
   certificate_domain               = "*.bespinglobal.site"
   argocd_host                      = "argocd.bespinglobal.site"
+  grafana_host                     = "grafana.bespinglobal.site"
   eks_baseline_public_access_cidrs = ["15.165.176.99/32"]
 }
 
@@ -21,4 +22,5 @@ output "private_zone_name" { value = local.private_zone_name }
 output "public_zone_name" { value = local.public_zone_name }
 output "certificate_domain" { value = local.certificate_domain }
 output "argocd_host" { value = local.argocd_host }
+output "grafana_host" { value = local.grafana_host }
 output "eks_baseline_public_access_cidrs" { value = local.eks_baseline_public_access_cidrs }
