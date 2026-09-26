@@ -65,7 +65,13 @@ resource "aws_eks_pod_identity_association" "this" {
 
 # 컨트롤러 본체. Ingress 어노테이션을 보고 서비스 ALB 를 만들고,
 # TargetGroupBinding CRD 를 설치해 ops ALB 의 대상 그룹에 파드를 등록한다.
-# 주의 — version 인자가 없어 apply 마다 최신 차트를 받는다.
+# gitops 의 overlays/eks/observability/grafana.yaml 이 그 CRD 를 써서
+# Grafana 를 ops ALB 대상 그룹에 붙인다. 이 모듈이 없으면 그 리소스만
+# 적용에 실패한다.
+#
+# 차트 버전은 var.chart_version 기본값 3.5.0 으로 고정된다. 호출부
+# (aws-eks/main.tf)에서 덮어쓰지 않는다. 2026-09-27 기준 eks-charts
+# 저장소의 최신 버전이다.
 resource "helm_release" "this" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
