@@ -33,6 +33,13 @@ resource "google_sql_database_instance" "main" {
       # VPN 너머 AWS 대역에서 오는 접속을 허용하려면 필요하다.
       # (PSA 피어링의 export_custom_routes 와 짝이다)
       enable_private_path_for_google_cloud_services = true
+
+      # GCP 보안 진단(Allows unencrypted direct connections) 대응.
+      # 클라이언트 인증서까진 요구하지 않고 TLS만 강제한다.
+      # DMS 타깃 엔드포인트는 이미 ssl_mode=require 라 영향 없음(aws-modules/dms/main.tf:128).
+      # ledger 3개 서비스는 JDBC URL에 sslmode 가 없어 이대로면 접속이 끊긴다 —
+      # gitops/03_manifests/gke/ledger/*.yaml 에 sslmode=require 를 같이 추가해야 한다.
+      ssl_mode = "ENCRYPTED_ONLY"
     }
 
     backup_configuration {

@@ -14,3 +14,8 @@ variable "github_terraform_role_arn" {
   type        = string
   default     = "arn:aws:iam::769413326616:role/boa-github-terraform-dev"
 }
+
+variable "code_server_role_arn" {
+  description = "IAM Role ARN assumed by terraform code server"
+  type        = string
+}
