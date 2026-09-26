@@ -42,6 +42,7 @@ jobs:
           - aws-eks
           - aws-eks-platform
           - aws-db-bootstrap
+          - aws-observability
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -386,6 +387,35 @@ jobs:
       - name: Apply aws-db-bootstrap
         run: bash scripts/terraform-aws-root.sh plan-apply aws-db-bootstrap
 
+  apply_aws_observability:
+    name: Apply - aws-observability
+    needs:
+      - apply_aws_eks
+      - apply_aws_ops
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-observability
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-observability
+
   backup-state:
     name: Backup Terraform State
     needs:
@@ -398,8 +428,9 @@ jobs:
       - apply_aws_eks
       - apply_aws_eks_platform
       - apply_aws_db_bootstrap
+      - apply_aws_observability
       - apply_gcp_state_backup
-    if: ${{ inputs.confirm == true && needs.apply_persistent.result == 'success' && needs.apply_aws_state_backup.result == 'success' && needs.apply_aws_core.result == 'success' && needs.apply_aws_rds.result == 'success' && needs.apply_aws_cache.result == 'success' && needs.apply_aws_ops.result == 'success' && needs.apply_aws_eks.result == 'success' && needs.apply_aws_eks_platform.result == 'success' && needs.apply_aws_db_bootstrap.result == 'success' && needs.apply_gcp_state_backup.result == 'success' }}
+    if: ${{ inputs.confirm == true && needs.apply_persistent.result == 'success' && needs.apply_aws_state_backup.result == 'success' && needs.apply_aws_core.result == 'success' && needs.apply_aws_rds.result == 'success' && needs.apply_aws_cache.result == 'success' && needs.apply_aws_ops.result == 'success' && needs.apply_aws_eks.result == 'success' && needs.apply_aws_eks_platform.result == 'success' && needs.apply_aws_db_bootstrap.result == 'success' && needs.apply_aws_observability.result == 'success' && needs.apply_gcp_state_backup.result == 'success' }}
     runs-on: ubuntu-latest
     environment: dev-infra
     timeout-minutes: 30
@@ -418,6 +449,7 @@ jobs:
         aws-eks
         aws-eks-platform
         aws-db-bootstrap
+        aws-observability
     steps:
       - name: Checkout Infra
         uses: actions/checkout@v4

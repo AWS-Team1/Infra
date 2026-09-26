@@ -19,7 +19,7 @@ chmod 700 "$BACKUP_DIR"
 
 for root in "$@"; do
   case "$root" in
-    persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap) ;;
+    persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap|aws-observability) ;;
     *) echo "unsupported Terraform backup root: $root" >&2; exit 2 ;;
   esac
 

@@ -11,8 +11,11 @@ Terraform으로 AWS·GCP에 Bank of Anthos(`boa`) 데모용 인프라를 구성�
 
 ```
 aws-modules/, gcp-modules/, net-modules/   재사용 모듈 (backend 없음)
-aws-core, aws-eks, aws-rds, aws-cache,
-aws-ops, aws-db-bootstrap, aws-dms          AWS 쪽 root
+|-- persistent, aws-state-backup            장기 보존·state DR root
+|-- aws-core, aws-eks, aws-rds, aws-cache,
+|   aws-ops, aws-eks-platform,
+|   aws-db-bootstrap, aws-observability     정상 AWS lifecycle root
+|-- aws-dms                                 외부/수동 DMS 참고 root (정상 lifecycle 제외)
 gcp-core, gcp-gke, gcp-cloudsql, gcp-ops    GCP 쪽 root (AWS 구성 미러)
 net-link                                    AWS↔GCP VPN 연결 (DR)
 boa/k8s                                     참고용 K8s manifest (배포 소스는 별도 GitOps 저장소)

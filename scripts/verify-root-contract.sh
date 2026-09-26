@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT=${1:-}
 case "$ROOT" in
-  persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap) ;;
+  persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap|aws-observability) ;;
   *) echo "usage: $0 <terraform-root>" >&2; exit 2 ;;
 esac
 

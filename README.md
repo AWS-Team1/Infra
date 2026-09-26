@@ -9,7 +9,7 @@ S3와 GCP Tokyo GCS에 동일한 bundle로 보관합니다. 저장소 최상위�
 
 | root | state key | 소유 범위 | provider | 의존 |
 |---|---|---|---|---|
-| `persistent` | `aws/persistent/terraform.tfstate` | JWT·애플리케이션 DB 장기 보존 Secret | aws · random | — |
+| `persistent` | `aws/persistent/terraform.tfstate` | JWT·DB·Observability 장기 보존 Secret, telemetry archive S3 | aws · random | — |
 | `aws-state-backup` | `aws/state-backup/terraform.tfstate` | Tokyo DR state backup S3 | aws | 기존 GitHub Terraform OIDC Role 조회 |
 | `aws-core` | `aws/core/terraform.tfstate` | VPC·Subnet·NAT | aws | — |
 | `aws-rds` | `aws/rds/terraform.tfstate` | PostgreSQL RDS | aws | core |
@@ -18,6 +18,7 @@ S3와 GCP Tokyo GCS에 동일한 bundle로 보관합니다. 저장소 최상위�
 | `aws-eks` | `aws/eks/terraform.tfstate` | EKS·IAM·Add-on·Pod Identity | aws | core |
 | `aws-eks-platform` | `aws/eks-platform/terraform.tfstate` | AWS Load Balancer Controller Helm/SA·CSI RBAC | kubernetes · helm | core · eks |
 | `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | DB bootstrap IAM·Pod Identity | aws | eks · rds · persistent Secret 조회 |
+| `aws-observability` | `aws/observability/terraform.tfstate` | CloudWatch·IAM·Pod Identity·Grafana ALB/Route53 연결 | aws | core · eks · ops |
 | `gcp-state-backup` | `gcp/state-backup/terraform.tfstate` | AWS state DR backup GCS | google | AWS/GCP application roots와 독립 |
 
 Valkey의 credentials/runtime Secret 계약, ephemeral/write-only 비밀번호 전달과 기존
@@ -35,23 +36,23 @@ Code Server bootstrap 값을 포함하고, CI는 동일한 `env/backend.hcl`을 
 정상 적용은 root dependency를 GitHub Actions `needs`로 표현한 병렬 DAG입니다.
 
 ```text
-AWS Validate(9 roots)
-├─ persistent ───────────────────────────────┐
-├─ aws-state-backup ─────────────────────────┤
-└─ aws-core                                  │
-   ├─ aws-rds ───────────────┐               │
-   ├─ aws-cache              │               │
-   ├─ aws-ops                │               │
-   └─ aws-eks                │               │
-      ├─ aws-eks-platform    │               │
-      │  └─ runner CIDR restore(always)      │
-      └──────────────────────┴─ aws-db-bootstrap
-                                               │
-GCS Validate ── gcp-state-backup ──────────────┤
-                                               ↓
-                           동일 state bundle 1회 수집
-                               ├─ Tokyo S3
-                               └─ Tokyo GCS
+AWS Validate(10 roots)
+├─ persistent ────────────────────────────┐
+├─ aws-state-backup ──────────────────────┤
+└─ aws-core                               │
+   ├─ aws-rds ───────────────┐            │
+   ├─ aws-cache                           │
+   ├─ aws-ops ───────────────┼─ aws-observability
+   └─ aws-eks ───────────────┘            │
+      ├─ aws-eks-platform                 │
+      │  └─ runner CIDR restore(always)   │
+      └──────────────┬─ aws-db-bootstrap  │
+                     └────────────────────┤
+GCS Validate ── gcp-state-backup ─────────┤
+                                            ↓
+                        동일 state bundle 1회 수집
+                            ├─ Tokyo S3
+                            └─ Tokyo GCS
 ```
 
 `aws-db-bootstrap`은 실제 코드상 `persistent` Secret, `aws-rds` state, `aws-eks` state에만
@@ -65,11 +66,11 @@ GCS Validate ── gcp-state-backup ──────────────�
 명시적 Destroy 확인 → AWS 계정 확인 → DMS/VPN 기반 destroy_core 판정
 → 임시 CI runner CIDR 허용
 → EKS external pre-clean
-  (Argo CD reconciliation 정지 → 프로젝트 Ingress/TargetGroupBinding 삭제
+  (Argo CD reconciliation 정지 → 프로젝트 Ingress와 Argo CD/Grafana TargetGroupBinding 삭제
    → Karpenter NodePool 삭제 → NodeClaim 종료 대기 → EC2NodeClass 삭제
    → controller가 생성한 ALB/Target Group/Security Group/ENI/EC2/Instance Profile 정리 대기)
 → 전체 root destroy plan 사전 검증
-→ aws-db-bootstrap → aws-eks-platform → aws-eks → aws-ops
+→ aws-db-bootstrap → aws-observability → aws-eks-platform → aws-eks → aws-ops
 → aws-cache → aws-rds → aws-core(DMS/VPN dependency가 없을 때만)
 → persistent(full_teardown=true만)
 → 삭제 결과 검증 → 클러스터가 남아 있으면 기준 CIDR 복원
@@ -88,10 +89,15 @@ destroy 전에 안전하게 제거하는 teardown-only 단계입니다. GitOps r
 
 `aws-eks-platform`은 GitOps workload가 아니라 Terraform이 소유하는 LBC Helm/ServiceAccount와
 CSI RBAC root이므로 Apply/Destroy 수명주기에 계속 포함합니다.
+`aws-observability` 자체는 AWS provider만 사용하며 Apply는 `aws-eks`와 `aws-ops` 완료 후
+가능합니다. 다만 Grafana workload와 TargetGroupBinding을 수동 GitOps 절차로 배포할 때는
+LBC가 준비된 `aws-eks-platform` 완료 이후에 수행해야 합니다.
 
 `persistent`는 routine destroy에서 보존하며, `full_teardown=true`를 명시적으로 선택한 경우에만
-마지막에 삭제합니다. Full teardown은 clean-slate teardown으로 취급하므로 persistent Secret은
-recovery window 없이 즉시 삭제되어 같은 이름으로 바로 다시 생성할 수 있습니다. 따라서
+마지막에 삭제합니다. 여기에는 WhaTap/Grafana Secret container와 telemetry archive S3도
+포함됩니다. Full teardown은 clean-slate teardown으로 취급하므로 persistent Secret은
+recovery window 없이 즉시 삭제되고, `force_destroy`가 archive의 모든 객체와 version을
+영구 삭제합니다. 따라서 보존 필요성을 확인한 뒤에만 full teardown을 선택해야 합니다. 이후
 Apply → full teardown → Apply 반복 시 scheduled-for-deletion 상태로 인한 수동 복구가 필요하지
 않습니다. ECR은 이 저장소의 Terraform 적용·삭제 수명주기에 포함하지 않습니다.
 
@@ -140,7 +146,8 @@ terraform-state-backups/20260926T051500Z/<github-sha>/
 ├── aws-ops.tfstate
 ├── aws-eks.tfstate
 ├── aws-eks-platform.tfstate
-└── aws-db-bootstrap.tfstate
+├── aws-db-bootstrap.tfstate
+└── aws-observability.tfstate
 ```
 
 `metadata.json`에는 UTC timestamp, GitHub SHA/run ID/ref, AWS account ID, source repository와
@@ -224,6 +231,7 @@ terraform -chdir=<root> validate
 - RDS: PostgreSQL 16.14, `db.t4g.micro`, Multi-AZ
 - Cache: Serverless Valkey, 최대 1GB / 1,000 ECPU/s
 - NAT Gateway 2개, EKS, Multi-AZ RDS, ElastiCache는 실행 중 비용이 발생합니다.
-- `terraform.tfvars`, `.terraform/`, `*.tfstate`는 커밋하지 않습니다.
+- `.terraform/`, `*.tfstate`는 커밋하지 않습니다. 일반 managed root는 `env/main.tf`를 쓰며,
+  별도 cross-cloud VPN root인 `net-link`만 의도적으로 추적된 `terraform.tfvars`를 사용합니다.
 - 장기 보존 Secret과 state migration 전에는 migration 문서의 backup·import·source cleanup
   순서와 physical ID를 다시 확인합니다.

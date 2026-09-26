@@ -1,7 +1,7 @@
 # 관측 스택 변경 내역 — Infra
 
-- 기준 브랜치: `dev-0922` (`89e4fad`)
-- 작업 브랜치: `feat/observability-stack`
+- 최초 구현 브랜치: `feat/observability-stack`
+- 최종 lifecycle 통합 브랜치: `feature/final-infra-integration`
 - 작성: 2026-09-26
 - 담당: 보안·관측 파트
 - 짝 문서: `gitops/docs/observability-changelog.md`
@@ -14,21 +14,15 @@
 
 ## 1. 요약
 
-| 구분 | 파일 수 | 추가 | 삭제 |
-|---|---|---|---|
-| 신규 루트 모듈 `aws-observability/` | 6 | 274 | 0 |
-| 신규 모듈 `aws-modules/observability/` | 5 | 912 | 0 |
-| 기존 모듈 수정 `aws-modules/rds/` | 2 | 103 | 1 |
-| 합계 | 13 | 1289 | 1 |
-
-**기존 리소스를 지우거나 이름을 바꾼 것은 없다.** 유일한 삭제 1줄은 RDS
-파라미터 값을 리터럴에서 변수로 바꾼 것이다.
+최종 통합에서는 observability AWS 리소스를 독립 root로 유지하되 장기 보존 대상인
+telemetry archive와 두 Secret container의 소유권을 `persistent` root로 옮겼다.
+routine destroy는 관측 실행 리소스만 제거하고 보존 데이터는 남긴다.
 
 ---
 
 ## 2. 신규 — `aws-observability/` (루트 모듈)
 
-기존 루트들과 같은 6개 파일 구성을 따랐다. 1단 평면 구조를 유지해서
+기존 루트들과 같은 구성을 따랐다. `environment.tf`로 `../env` 계약을 사용하고 1단 평면 구조를 유지해서
 `aws-rds` · `aws-cache` · `aws-dms` 를 참조하지 않는다.
 
 | 파일 | 내용 |
@@ -36,16 +30,17 @@
 | `backend.tf` | 상태 키 `aws/observability/terraform.tfstate`. 버킷·락 방식은 기존과 동일 |
 | `providers.tf` | `default_tags` 의 `Component = "observability"` |
 | `versions.tf` | aws `~> 6.0` 만. kubernetes·helm 공급자를 쓰지 않는다 |
-| `variables.tf` | `grafana_host` · `enable_telemetry_archive` · `enable_log_data_protection` |
-| `main.tf` | 모듈 호출 + Secrets Manager 껍데기 2개 + Route53 A 레코드 |
+| `environment.tf` | 공통 project/region/state/public DNS/Grafana host 계약 |
+| `variables.tf` | `enable_telemetry_archive` · `enable_log_data_protection` |
+| `main.tf` | 모듈 호출 + Route53 A 레코드 |
 | `outputs.tf` | gitops 에 넣어야 하는 값 4개 + 확인용 + `secret_fill_commands` |
 
 ### 읽는 원격 상태 3개
 
 ```
-aws/core/terraform.tfstate  → vpc_id
+aws/core/terraform.tfstate  → vpc_id · private_subnet_cidrs
 aws/eks/terraform.tfstate   → cluster_name
-aws/ops/terraform.tfstate   → ops_alb_https_listener_arn · alb_dns_name · alb_zone_id
+aws/ops/terraform.tfstate   → ops_alb_https_listener_arn · ops_alb_security_group_id · alb_dns_name · alb_zone_id
 ```
 
 **적용 순서** — `aws-core` → `aws-eks` → `aws-ops` → `aws-observability`.
@@ -53,11 +48,12 @@ aws/ops/terraform.tfstate   → ops_alb_https_listener_arn · alb_dns_name · al
 
 ### Secrets Manager 껍데기 2개
 
-`/boa/observability/whatap` · `/boa/observability/grafana` 를 만들지만
+`persistent` root가 `/boa/observability/whatap` · `/boa/observability/grafana` 를 만들지만
 **값은 넣지 않는다.** 라이선스 키가 tfvars·state·CI 로그에 남지 않게 하려는 것이다.
 채우는 명령은 `terraform output secret_fill_commands` 가 그대로 출력한다.
 
-`recovery_window_in_days = 0` — 실습 환경이라 지운 뒤 같은 이름을 바로 재사용한다.
+routine destroy에는 포함되지 않고 `full_teardown=true`에서만 제거된다.
+`recovery_window_in_days = 0`이라 clean apply에서 같은 이름을 다시 사용할 수 있다.
 
 ---
 
@@ -82,8 +78,8 @@ EKS 컨트롤 플레인 로그 그룹(`/aws/eks/boa-eks/cluster`)과 별개다. 
 
 | 이름 | 정규식 | 대상 |
 |---|---|---|
-| BoaAccountId | `(?<![0-9])[0-9]{10}(?![0-9])` | 10자리 계좌번호 |
-| BoaRoutingNumber | `(?<![0-9])[0-9]{9}(?![0-9])` | `LOCAL_ROUTING_NUM` |
+| BoaAccountId | `[0-9]{10}` | 10자리 계좌번호 후보 |
+| BoaRoutingNumber | `[0-9]{9}` | `LOCAL_ROUTING_NUM` 후보 |
 | BoaJwtToken | `eyJ...\.…\.…` | userservice 가 발급하는 RS256 JWT |
 
 관리형 식별자 2개 — `EmailAddress` · `CreditCardNumber`.
@@ -91,18 +87,21 @@ EKS 컨트롤 플레인 로그 그룹(`/aws/eks/boa-eks/cluster`)과 별개다. 
 **정책 문서의 Statement 순서가 의미를 갖는다.** `Audit` 가 먼저 와야 무엇이
 걸렸는지 기록되고, 그 다음 `Deidentify` 가 마스킹한다.
 
-> ⚠️ **마스킹은 읽기 시점이다.** 원본은 로그 그룹에 그대로 저장되고 조회할 때
-> `*****` 로 가려진다. "저장 안 함"이 아니라 "기본적으로 안 보임"이다.
+> ⚠️ 데이터 보호 정책은 수집 시점에 민감 데이터를 탐지해 기본 조회에서 마스킹한다.
+> 저장된 원본은 유지되며 `logs:Unmask` 권한이 있는 주체만 볼 수 있다.
 
 ### 3.3 텔레메트리 장기 보관 S3
 
-버킷 `boa-telemetry-archive-<계정ID>`. 와탭 보존 기간·체험 만료와 무관한
-우리 쪽 원본을 남긴다.
+`persistent` root가 버킷 `boa-telemetry-archive-<계정ID>`를 소유한다. 와탭 보존
+기간·체험 만료와 무관한 우리 쪽 원본을 routine destroy 이후에도 남긴다.
 
-- 퍼블릭 접근 4종 차단, AES256 암호화 + 버킷 키
+- 퍼블릭 접근 4종 차단, AES256 암호화
 - 라이프사이클 — 30일 STANDARD_IA, 365일 만료, 중단된 멀티파트 7일 정리
 - 버킷 정책 — `aws:SecureTransport = false` 이면 전부 Deny
 - 버전 관리는 `Suspended`. 감사 대상이 되면 `Enabled` 로 바꾼다
+
+명시적 `full_teardown=true`에서는 `force_destroy`로 객체와 version까지 영구 삭제한다.
+따라서 archive 보존 여부를 확인하지 않고 full teardown을 실행하면 안 된다.
 
 > ⚠️ **이 버킷에는 CloudWatch 데이터 보호 정책이 걸리지 않는다.** 그 기능은
 > CloudWatch Logs 전용이다. 그래서 마스킹을 수집기의 `redaction`·`transform`
@@ -154,6 +153,7 @@ aws iam list-entities-for-policy --policy-arn $(terraform output -raw logs_unmas
 
 - 대상 그룹 `boa-grafana-tg` (ip, 3000, 헬스체크 `/api/health`)
 - 리스너 규칙 우선순위 200, host-header `grafana.bespinglobal.site`
+- ops ALB SG에서 private subnet CIDR의 Grafana port 3000으로만 egress 추가
 - **리스너 자체는 건드리지 않는다.** 규칙만 이 모듈이 소유하므로 `aws-ops` 상태와 충돌하지 않는다
 
 대상 등록은 Terraform 이 하지 않는다. gitops 의 `TargetGroupBinding` 이 파드 IP 를
@@ -208,6 +208,11 @@ pgaudit 를 켤 때 순서 — ① `enable_pgaudit = true` apply → ② 인스�
 ## 5. 배포 절차
 
 ```bash
+cd Infra/persistent
+terraform init
+terraform plan
+terraform apply
+
 cd Infra/aws-observability
 terraform init
 terraform plan -out=obs.tfplan
@@ -225,6 +230,9 @@ terraform output -raw grafana_target_group_arn
 # ALB SG (gitops 의 TargetGroupBinding 에 필요)
 terraform -chdir=../aws-ops output -raw ops_alb_security_group_id
 ```
+
+GitOps의 Grafana workload/TargetGroupBinding은 Terraform `aws-eks-platform`이 LBC를
+준비한 이후 별도 수동 절차로 배포한다.
 
 RDS 변경은 별도다. 보안 강화만 적용하려면:
 

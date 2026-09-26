@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       full_teardown:
-        description: "persistent Secret까지 명시적으로 제거"
+        description: "persistent Secret과 telemetry archive의 모든 객체/버전까지 명시적으로 제거"
         required: true
         default: false
         type: boolean
@@ -183,6 +183,8 @@ jobs:
           APP_STACK="${APP_NAMESPACE}/${APP_INGRESS}"
           ARGO_NAMESPACE="argocd"
           ARGO_TGB="argocd-server"
+          OBS_NAMESPACE="monitoring"
+          GRAFANA_TGB="grafana"
           KARPENTER_NODEPOOL="default"
           KARPENTER_NODECLASS="default"
 
@@ -279,6 +281,17 @@ jobs:
             wait_namespaced_absent "$ARGO_NAMESPACE" "targetgroupbinding/$ARGO_TGB" 900
           else
             echo "TargetGroupBinding CRD or argocd namespace is already absent."
+          fi
+
+          # Delete only the Grafana binding declared by the GitOps observability overlay.
+          # LBC remains alive until this binding and its AWS-side targets are released.
+          if [[ -n "$(kubectl get crd targetgroupbindings.elbv2.k8s.aws --ignore-not-found -o name)" ]] && \
+             [[ -n "$(kubectl get namespace "$OBS_NAMESPACE" --ignore-not-found -o name)" ]]; then
+            kubectl -n "$OBS_NAMESPACE" delete "targetgroupbinding/$GRAFANA_TGB" \
+              --ignore-not-found --wait=false
+            wait_namespaced_absent "$OBS_NAMESPACE" "targetgroupbinding/$GRAFANA_TGB" 900
+          else
+            echo "TargetGroupBinding CRD or monitoring namespace is already absent."
           fi
 
           # Capture the controller-created profile before EC2NodeClass finalization.
@@ -390,7 +403,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          roots=(aws-db-bootstrap)
+          roots=(aws-db-bootstrap aws-observability)
           if [[ "${{ steps.eks.outputs.exists }}" == "true" ]]; then
             roots+=(aws-eks-platform)
           fi
@@ -410,6 +423,10 @@ jobs:
       - name: Destroy DB bootstrap binding
         shell: bash
         run: bash scripts/terraform-aws-root.sh apply-destroy aws-db-bootstrap
+
+      - name: Destroy AWS observability integration
+        shell: bash
+        run: bash scripts/terraform-aws-root.sh apply-destroy aws-observability
 
       - name: Destroy EKS platform
         if: ${{ steps.eks.outputs.exists == 'true' }}
@@ -458,6 +475,57 @@ jobs:
           aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME" >/dev/null 2>&1 && failed=1 || true
           [[ -z "$(aws rds describe-db-instances --query "DBInstances[?DBInstanceIdentifier=='boa-postgres'].DBInstanceIdentifier" --output text)" ]] || failed=1
           [[ -z "$(aws elasticache describe-serverless-caches --query "ServerlessCaches[?ServerlessCacheName=='boa-valkey'].ServerlessCacheName" --output text)" ]] || failed=1
+          [[ -z "$(aws logs describe-log-groups --log-group-name-prefix "/aws/eks/$EKS_CLUSTER_NAME/" --query "logGroups[?logGroupName=='/aws/eks/$EKS_CLUSTER_NAME/application' || logGroupName=='/aws/eks/$EKS_CLUSTER_NAME/otel-emf'].logGroupName" --output text)" ]] || failed=1
+          [[ -z "$(aws logs describe-log-groups --log-group-name-prefix "/aws/logs-data-protection/$EKS_CLUSTER_NAME" --query "logGroups[?logGroupName=='/aws/logs-data-protection/$EKS_CLUSTER_NAME'].logGroupName" --output text)" ]] || failed=1
+          aws elbv2 describe-target-groups --names boa-grafana-tg >/dev/null 2>&1 && failed=1 || true
+          aws iam get-role --role-name "$EKS_CLUSTER_NAME-otel-collector-role" >/dev/null 2>&1 && failed=1 || true
+          aws iam get-role --role-name "$EKS_CLUSTER_NAME-grafana-role" >/dev/null 2>&1 && failed=1 || true
+          public_zone_id=$(aws route53 list-hosted-zones-by-name \
+            --dns-name bespinglobal.site. --output json |
+            jq -r 'first(.HostedZones[] | select(.Name == "bespinglobal.site." and .Config.PrivateZone == false) | .Id) // empty')
+          [[ -n "$public_zone_id" ]] || {
+            echo "Public hosted zone not found during Grafana record verification." >&2
+            failed=1
+          }
+          if [[ -n "$public_zone_id" ]]; then
+            grafana_records=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id "$public_zone_id" \
+              --query "ResourceRecordSets[?Name=='grafana.bespinglobal.site.' && Type=='A'].Name" \
+              --output text)
+            [[ -z "$grafana_records" ]] || failed=1
+          fi
+
+          telemetry_bucket="boa-telemetry-archive-$EXPECTED_AWS_ACCOUNT_ID"
+          for secret in /boa/observability/whatap /boa/observability/grafana; do
+            if [[ "${{ inputs.full_teardown }}" == "true" ]]; then
+              deadline=$(( $(date +%s) + 120 ))
+              while :; do
+                if secret_output=$(aws secretsmanager describe-secret --secret-id "$secret" 2>&1); then
+                  (( $(date +%s) < deadline )) || {
+                    echo "Persistent Secret still exists after full teardown: $secret" >&2
+                    failed=1
+                    break
+                  }
+                  sleep 5
+                elif grep -q 'ResourceNotFoundException' <<<"$secret_output"; then
+                  break
+                else
+                  echo "$secret_output" >&2
+                  failed=1
+                  break
+                fi
+              done
+            else
+              aws secretsmanager describe-secret --secret-id "$secret" >/dev/null 2>&1 || failed=1
+            fi
+          done
+          telemetry_buckets=$(aws s3api list-buckets \
+            --query "Buckets[?Name=='$telemetry_bucket'].Name" --output text)
+          if [[ "${{ inputs.full_teardown }}" == "true" ]]; then
+            [[ -z "$telemetry_buckets" ]] || failed=1
+          else
+            [[ "$telemetry_buckets" == "$telemetry_bucket" ]] || failed=1
+          fi
           if [[ -n "$ORIGINAL_VPC_ID" ]]; then
             current_vpc_id=$(aws ec2 describe-vpcs --vpc-ids "$ORIGINAL_VPC_ID" --query 'Vpcs[].VpcId' --output text 2>/dev/null || true)
             if [[ "$DESTROY_CORE" == "true" ]]; then
