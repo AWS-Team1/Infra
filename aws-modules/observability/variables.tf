@@ -172,7 +172,7 @@ variable "ops_alb_https_listener_arn" {
 # ---------------------------------------------------------
 
 variable "secret_path_prefix" {
-  description = "수집기·Grafana 가 읽을 Secrets Manager 경로 접두사"
+  description = "External Secrets Operator가 읽을 Secrets Manager 경로 접두사"
   type        = string
   default     = "/boa/observability"
 }

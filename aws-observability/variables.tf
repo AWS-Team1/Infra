@@ -13,5 +13,5 @@ variable "enable_telemetry_archive" {
 variable "enable_log_data_protection" {
   description = "CloudWatch Logs 데이터 보호 정책(마스킹)을 붙일 것인가"
   type        = bool
-  default     = true
+  default     = false
 }
