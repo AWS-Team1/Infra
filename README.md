@@ -1,9 +1,9 @@
 # AWS Infrastructure with Terraform
 
 Terraform으로 AWS 서울 리전(`ap-northeast-2`)의 VPC, EKS, PostgreSQL RDS,
-Serverless Valkey와 운영용 ALB, Tokyo 리전(`ap-northeast-1`)의 DR state backup S3를
-관리합니다. 저장소 최상위에는 실행 대상 `.tf`가 없으며, 독립된 Terraform root와
-재사용 모듈로 구성됩니다.
+Serverless Valkey와 운영용 ALB를 관리합니다. AWS Terraform state의 DR 사본은 AWS Tokyo
+S3와 GCP Tokyo GCS에 동일한 bundle로 보관합니다. 저장소 최상위에는 실행 대상 `.tf`가
+없으며, 독립된 Terraform root와 재사용 모듈로 구성됩니다.
 
 ## 수명주기 구조
 
@@ -18,6 +18,7 @@ Serverless Valkey와 운영용 ALB, Tokyo 리전(`ap-northeast-1`)의 DR state b
 | `aws-eks` | `aws/eks/terraform.tfstate` | EKS·IAM·Add-on·Pod Identity | aws | core |
 | `aws-eks-platform` | `aws/eks-platform/terraform.tfstate` | AWS Load Balancer Controller Helm/SA·CSI RBAC | kubernetes · helm | core · eks |
 | `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | DB bootstrap IAM·Pod Identity | aws | eks · rds · persistent Secret 조회 |
+| `gcp-state-backup` | `gcp/state-backup/terraform.tfstate` | AWS state DR backup GCS | google | AWS/GCP application roots와 독립 |
 
 Valkey의 credentials/runtime Secret 계약, ephemeral/write-only 비밀번호 전달과 기존
 `aws-cache` state의 선언형 migration은
@@ -31,13 +32,32 @@ Code Server bootstrap 값을 포함하고, CI는 동일한 `env/backend.hcl`을 
 
 ## 적용 및 삭제 순서
 
-정상 적용 순서:
+정상 적용은 root dependency를 GitHub Actions `needs`로 표현한 병렬 DAG입니다.
 
 ```text
-persistent → aws-state-backup → aws-core → aws-rds → aws-cache → aws-ops → aws-eks
-→ 임시 CI runner CIDR 허용 → aws-eks-platform → aws-db-bootstrap → 기준 CIDR 복원
-→ Terraform state DR backup
+AWS Validate(9 roots)
+├─ persistent ───────────────────────────────┐
+├─ aws-state-backup ─────────────────────────┤
+└─ aws-core                                  │
+   ├─ aws-rds ───────────────┐               │
+   ├─ aws-cache              │               │
+   ├─ aws-ops                │               │
+   └─ aws-eks                │               │
+      ├─ aws-eks-platform    │               │
+      │  └─ runner CIDR restore(always)      │
+      └──────────────────────┴─ aws-db-bootstrap
+                                               │
+GCS Validate ── gcp-state-backup ──────────────┤
+                                               ↓
+                           동일 state bundle 1회 수집
+                               ├─ Tokyo S3
+                               └─ Tokyo GCS
 ```
+
+`aws-db-bootstrap`은 실제 코드상 `persistent` Secret, `aws-rds` state, `aws-eks` state에만
+의존하므로 `aws-eks-platform`과 병렬 실행됩니다. EKS Kubernetes/Helm API를 사용하는
+`aws-eks-platform` job만 자기 runner의 공인 IP를 임시 허용하고 실패 여부와 관계없이
+기준 CIDR을 복원합니다.
 
 정상 삭제 순서:
 
@@ -80,20 +100,31 @@ Apply → full teardown → Apply 반복 시 scheduled-for-deletion 상태로 �
 백업 보존 여부를 결정하고 `prevent_destroy`를 코드에서 해제한 뒤, 별도 승인 절차로 이 root만
 삭제해야 합니다. Lifecycle expiration은 보존 정책이 정해지지 않아 구성하지 않습니다.
 
+`gcp-state-backup`도 일반 AWS Destroy와 GCP application infrastructure Destroy에 포함하지
+않습니다. GCS bucket은 `force_destroy = false`, `prevent_destroy = true`, uniform bucket-level
+access, public access prevention enforced, versioning을 사용하며 lifecycle expiration은 없습니다.
+
 ## Terraform state DR backup
 
 기존 Terraform backend는 서울 리전의 `boa-terraform-state-6416`을 그대로 사용합니다.
 `aws-state-backup` root 자체의 state도 이 primary backend의
 `aws/state-backup/terraform.tfstate`에 저장합니다. Tokyo 리전의
 `boa-terraform-state-backup-769413326616-ap-northeast-1`은 backend가 아니라 Apply 성공 후
-생성되는 state 사본만 저장하는 DR destination입니다.
+생성되는 state 사본만 저장하는 DR destination입니다. GCS destination을 관리하는
+`gcp-state-backup` root의 state도 같은 서울 S3 backend의
+`gcp/state-backup/terraform.tfstate`를 사용하므로 자기 bucket을 backend로 쓰는 bootstrap
+순환이 없습니다.
+
+GCS destination은 GCP project ID를 포함한
+`boa-terraform-state-backup-kdt4-1-506106`이며 location은 `ASIA-NORTHEAST1`입니다.
+GCP application roots(`gcp-core`, `gcp-cloudsql`, `gcp-ops`, `gcp-gke`)와 lifecycle상 독립입니다.
 
 Apply workflow는 모든 Terraform root 적용이 성공한 실제 Apply에서만 별도 runner의
 `backup-state` job을 실행합니다. `scripts/collect-terraform-state-backup.sh`는 기존 backend를
-초기화하고 각 root에 `terraform state pull`을 실행해 권한이 제한된 임시 디렉터리에 state만
-수집합니다. `scripts/upload-terraform-state-backup-s3.sh`는 완성된 backup directory를 받아
-S3 업로드와 object 크기·S3 SHA-256 checksum 검증만 담당합니다. 따라서 향후 Backup Server로
-전환할 때는 수집 로직과 root 목록을 유지하고 upload adapter 호출만 교체할 수 있습니다.
+초기화하고 각 root에 `terraform state pull`을 실행해 권한이 제한된 임시 디렉터리에 state를
+한 번만 수집합니다. 완성된 동일 directory를 S3 adapter와 GCS adapter가 차례로 업로드하므로
+destination별 재수집이 없습니다. S3는 object size와 SHA-256 checksum을, GCS는 object size와
+MD5 hash를 검증합니다. 어느 destination이라도 실패하면 전체 backup job이 실패합니다.
 
 각 backup set은 다음처럼 기존 데이터를 덮어쓰지 않는 key를 사용합니다.
 
@@ -115,11 +146,12 @@ terraform-state-backups/20260926T051500Z/<github-sha>/
 `metadata.json`에는 UTC timestamp, GitHub SHA/run ID/ref, AWS account ID, source repository와
 root 목록만 기록하며 state 본문이나 Secret 값은 넣지 않습니다. State는 GitHub Artifact나
 Git에 업로드하지 않고 job 성공·실패와 관계없이 runner의 임시 디렉터리에서 제거합니다.
-Bucket은 public access 전면 차단, versioning, Bucket owner enforced, SSE-S3(AES256), HTTPS
+S3 Bucket은 public access 전면 차단, versioning, Bucket owner enforced, SSE-S3(AES256), HTTPS
 강제 정책을 사용합니다. 기존 `boa-github-terraform-dev` Role은 이 저장소에서 소유하지 않고
 bucket policy principal로만 참조하며, backup prefix에 `s3:GetObject`, `s3:PutObject`와 bucket의
 `s3:GetBucketLocation`만 허용합니다. `s3:DeleteObject`와 `s3:DeleteObjectVersion`은 명시적으로
-거부합니다.
+거부합니다. GCS upload는 generation-match `0` precondition으로 기존 object를 원자적으로
+덮어쓰지 않으며 Google-managed encryption at rest를 사용합니다.
 
 ## 로컬 실행
 
@@ -163,7 +195,10 @@ EKS API의 CI runner 접근은 `scripts/eks-runner-access.sh grant|restore`로 �
 외부 런타임 동작을 숨기지 않습니다.
 GitHub Actions는 OIDC Role을 사용하고 Code Server는 EC2 instance role을 사용하지만,
 EKS access entry에는 두 실행 주체를 모두 Cluster Admin으로 유지합니다.
-GitHub 환경에는 Terraform 실행용 `AWS_ROLE_ARN`, `AWS_REGION` variable만 필요하며,
+GitHub 환경에는 Terraform 실행용 `AWS_ROLE_ARN`, `AWS_REGION`과 GCS backup용
+`GCP_WIF_PROVIDER`, `GCP_SERVICE_ACCOUNT`, `GCP_PROJECT_ID` variable이 필요합니다. GCP 인증은
+Workload Identity Federation만 사용하며 JSON service account key는 사용하지 않습니다.
+AWS Terraform workflow에
 `GITOPS_TOKEN`, `ARGOCD_REPO_USERNAME`, `ARGOCD_REPO_PASSWORD`는 AWS Terraform
 워크플로에서 사용하지 않습니다.
 

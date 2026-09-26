@@ -56,6 +56,80 @@ jobs:
       - name: Validate
         run: terraform -chdir="${{ matrix.root }}" validate
 
+  validate_gcp_state_backup:
+    name: Validate - gcp-state-backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Format check
+        run: terraform fmt -check -recursive gcp-state-backup
+      - name: Init without backend
+        run: terraform -chdir=gcp-state-backup init -backend=false -input=false
+      - name: Validate
+        run: terraform -chdir=gcp-state-backup validate
+
+  apply_gcp_state_backup:
+    name: Apply - gcp-state-backup
+    needs: validate_gcp_state_backup
+    if: ${{ inputs.confirm == true }}
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials for Terraform backend
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+      - name: Verify AWS and GCP identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+          test "$(gcloud auth list --filter=status:ACTIVE --format='value(account)')" = "$GCP_SERVICE_ACCOUNT"
+          gcloud config set project "$GCP_PROJECT_ID" >/dev/null
+          test "$(gcloud config get-value project)" = "$GCP_PROJECT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Init gcp-state-backup
+        run: terraform -chdir=gcp-state-backup init -reconfigure -backend-config=../env/backend.hcl -input=false
+      - name: Plan gcp-state-backup
+        run: terraform -chdir=gcp-state-backup plan -input=false -lock-timeout=5m -out=tfplan
+      - name: Show and guard gcp-state-backup plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=gcp-state-backup show -no-color tfplan
+          terraform -chdir=gcp-state-backup show -json tfplan |
+            jq -e '
+              [.resource_changes[]? | select((.change.actions | index("delete")) != null) | .address]
+              | if length == 0 then true else error("destructive backup destination actions: " + join(", ")) end
+            ' >/dev/null
+      - name: Apply gcp-state-backup
+        run: terraform -chdir=gcp-state-backup apply -input=false -lock-timeout=5m tfplan
+
   apply_persistent:
     name: Apply - persistent
     needs: validate
@@ -324,12 +398,16 @@ jobs:
       - apply_aws_eks
       - apply_aws_eks_platform
       - apply_aws_db_bootstrap
-    if: ${{ inputs.confirm == true && needs.apply_persistent.result == 'success' && needs.apply_aws_state_backup.result == 'success' && needs.apply_aws_core.result == 'success' && needs.apply_aws_rds.result == 'success' && needs.apply_aws_cache.result == 'success' && needs.apply_aws_ops.result == 'success' && needs.apply_aws_eks.result == 'success' && needs.apply_aws_eks_platform.result == 'success' && needs.apply_aws_db_bootstrap.result == 'success' }}
+      - apply_gcp_state_backup
+    if: ${{ inputs.confirm == true && needs.apply_persistent.result == 'success' && needs.apply_aws_state_backup.result == 'success' && needs.apply_aws_core.result == 'success' && needs.apply_aws_rds.result == 'success' && needs.apply_aws_cache.result == 'success' && needs.apply_aws_ops.result == 'success' && needs.apply_aws_eks.result == 'success' && needs.apply_aws_eks_platform.result == 'success' && needs.apply_aws_db_bootstrap.result == 'success' && needs.apply_gcp_state_backup.result == 'success' }}
     runs-on: ubuntu-latest
     environment: dev-infra
     timeout-minutes: 30
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
       BACKUP_ROOTS: |
         persistent
         aws-state-backup
@@ -349,18 +427,32 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Verify AWS identity
+      - name: Verify AWS and GCP identities
         shell: bash
         run: |
           set -euo pipefail
           test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+          test "$(gcloud auth list --filter=status:ACTIVE --format='value(account)')" = "$GCP_SERVICE_ACCOUNT"
+          gcloud config set project "$GCP_PROJECT_ID" >/dev/null
+          test "$(gcloud config get-value project)" = "$GCP_PROJECT_ID"
 
-      - name: Collect and upload Terraform state backup
+      - name: Collect once and upload Terraform state backup to S3 and GCS
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -417,10 +509,26 @@ jobs:
           backup_prefix=$(terraform -chdir=aws-state-backup output -raw object_prefix)
           object_prefix="${backup_prefix}/${timestamp}/${GITHUB_SHA}"
 
+          terraform -chdir=gcp-state-backup init \
+            -reconfigure \
+            -backend-config="$GITHUB_WORKSPACE/env/backend.hcl" \
+            -input=false >/dev/null
+          gcs_bucket=$(terraform -chdir=gcp-state-backup output -raw bucket_name)
+          gcs_location=$(terraform -chdir=gcp-state-backup output -raw bucket_location)
+          gcs_prefix=$(terraform -chdir=gcp-state-backup output -raw object_prefix)
+          gcs_object_prefix="${gcs_prefix}/${timestamp}/${GITHUB_SHA}"
+
           bash scripts/upload-terraform-state-backup-s3.sh \
             "$backup_dir" \
             "$backup_bucket" \
             "$backup_region" \
             "$object_prefix"
 
+          bash scripts/upload-terraform-state-backup-gcs.sh \
+            "$backup_dir" \
+            "$gcs_bucket" \
+            "$gcs_location" \
+            "$gcs_object_prefix"
+
           echo "Terraform state backup uploaded and verified: s3://${backup_bucket}/${object_prefix}/"
+          echo "Terraform state backup uploaded and verified: gs://${gcs_bucket}/${gcs_object_prefix}/"
