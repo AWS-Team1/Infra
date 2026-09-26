@@ -70,9 +70,10 @@ output "secret_fill_commands" {
   value = <<-EOT
     # 1) 와탭 프로젝트 액세스 키 — 제품별로 다르다
     #    쿠버네티스 제품 / 애플리케이션 제품 두 개를 각각 발급받아 넣는다
+    #    host/port 는 와탭 콘솔의 설치 안내에 표시된 수집 서버 값을 그대로 넣는다
+    #    (주석을 \ 뒤에 두면 줄 이음이 끊겨 명령이 두 개로 쪼개진다 — 여기 둔다)
     aws secretsmanager put-secret-value \
       --secret-id ${aws_secretsmanager_secret.whatap.name} \
-      #    host/port 는 와탭 콘솔의 설치 안내에 표시된 수집 서버 값을 그대로 넣는다
       --secret-string '{"kubernetes_license":"<K8S_KEY>","application_license":"<APM_KEY>","host":"<WHATAP_HOST>","port":"<WHATAP_PORT>"}'
 
     # 2) Grafana 관리자 비밀번호
