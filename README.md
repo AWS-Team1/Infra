@@ -65,9 +65,11 @@ destroy 전에 안전하게 제거하는 teardown-only 단계입니다. GitOps r
 `aws-eks-platform`은 GitOps workload가 아니라 Terraform이 소유하는 LBC Helm/ServiceAccount와
 CSI RBAC root이므로 Apply/Destroy 수명주기에 계속 포함합니다.
 
-`persistent`는 일반 삭제에서 제외합니다. Secret까지 포함한 전체 폐기 의도가 명시된 경우에만
-별도 `full_teardown` 입력으로 마지막에 삭제합니다. ECR은 이 저장소의 Terraform
-적용·삭제 수명주기에 포함하지 않습니다.
+`persistent`는 routine destroy에서 보존하며, `full_teardown=true`를 명시적으로 선택한 경우에만
+마지막에 삭제합니다. Full teardown은 clean-slate teardown으로 취급하므로 persistent Secret은
+recovery window 없이 즉시 삭제되어 같은 이름으로 바로 다시 생성할 수 있습니다. 따라서
+Apply → full teardown → Apply 반복 시 scheduled-for-deletion 상태로 인한 수동 복구가 필요하지
+않습니다. ECR은 이 저장소의 Terraform 적용·삭제 수명주기에 포함하지 않습니다.
 
 `aws-state-backup`도 routine Destroy와 `full_teardown` 모두에서 제외합니다. Backup bucket은
 `force_destroy = false`와 `prevent_destroy = true`로 보호합니다. 명시적으로 폐기하려면 먼저

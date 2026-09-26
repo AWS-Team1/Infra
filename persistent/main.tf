@@ -23,13 +23,13 @@ resource "aws_secretsmanager_secret" "app_database" {
 resource "aws_secretsmanager_secret" "accounts_database" {
   name                    = "/${module.environment.project_name}/database/accounts"
   description             = "Bank of Anthos accounts service least-privilege database credential"
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret" "ledger_database" {
   name                    = "/${module.environment.project_name}/database/ledger"
   description             = "Bank of Anthos ledger service least-privilege database credential"
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 }
 
 ephemeral "random_password" "app_database" {
