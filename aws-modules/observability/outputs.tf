@@ -45,6 +45,11 @@ output "grafana_role_arn" {
   depends_on = [aws_iam_role_policy_attachment.grafana]
 }
 
+output "eso_role_arn" {
+  value      = aws_iam_role.eso.arn
+  depends_on = [aws_iam_role_policy_attachment.eso]
+}
+
 # 감사용. 어떤 역할에도 붙어 있지 않은 것이 정상 상태다.
 output "logs_unmask_policy_arn" {
   description = "감사 시 사람이 의도적으로 부착하는 정책. 평상시 부착 대상은 없어야 한다"

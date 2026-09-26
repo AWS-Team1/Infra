@@ -257,3 +257,37 @@ terraform apply
 | 5 | `/boa/observability*` 범위가 앱 시크릿과 겹치지 않는가 | `aws secretsmanager list-secrets --query 'SecretList[].Name'` | 겹치면 수집기가 앱 시크릿을 읽을 수 있다 |
 | 6 | 관측용 AppProject 분리 | gitops 변경 내역 6항 참조 | 현재 `boa` 프로젝트 권한을 넓혔다 — 앱 Application 도 ClusterRole 을 만들 수 있게 됐다 |
 | 7 | RDS 로그 그룹(`/aws/rds/instance/boa-postgres/postgresql`)에도 데이터 보호 정책이 필요한가 | `log_parameter_max_length > 0` 으로 바꿀 때 필수 | 0 인 지금은 파라미터가 안 찍히므로 불필요 |
+
+---
+
+## 7. External Secrets Operator 연동 — IAM Role · Pod Identity 추가 (2026-09-26)
+
+gitops 저장소가 관측 스택 시크릿 공급을 Secrets Store CSI 드라이버에서
+External Secrets Operator(ESO)로 옮겼다(gitops `docs/observability-changelog.md`
+11항). ESO 컨트롤러 자신이 Secrets Manager 를 직접 읽으므로, 이전에 수집기
+역할이 대신 갖고 있던 읽기 권한을 걷어 ESO 전용 역할로 옮겼다.
+
+- `aws-modules/observability/iam.tf`
+  - 추가 — `aws_iam_role.eso` · `aws_iam_policy.eso`(`secretsmanager:GetSecretValue`·
+    `DescribeSecret` 를 `secret:/boa/observability*` 로 한정) ·
+    `aws_iam_role_policy_attachment.eso` · `aws_eks_pod_identity_association.eso`
+    (ns `external-secrets`, sa `external-secrets` — gitops 의
+    `boa-external-secrets` Application 이 `serviceAccount.name` 을 그 값으로
+    고정해 둔다)
+  - 삭제 — `aws_iam_policy.collector` 의 `ReadObservabilitySecrets` 문. 수집기
+    SA(파드 4종 공유)는 더는 Secrets Manager 를 직접 읽지 않는다.
+- `aws-modules/observability/variables.tf`: `eso_namespace`·`eso_service_account`
+  추가 (기본값 둘 다 `external-secrets`).
+- `aws-observability/main.tf`·`outputs.tf`: 위 두 변수를 명시적으로 전달하고
+  `eso_role_arn` 출력 추가 (collector·grafana 와 동일 패턴).
+
+Secrets Manager 쪽 리소스(`aws_secretsmanager_secret.whatap`·`.grafana`)와
+`outputs.tf` 의 `secret_fill_commands` 는 이미 ESO 의 `ExternalSecret.data[].remoteRef.property`
+가 기대하는 키(`kubernetes_license`·`application_license`·`host`·`port`,
+`admin_user`·`admin_password`)와 일치했으므로 변경하지 않았다.
+
+### 검증
+
+`terraform fmt`/`validate`는 이 세션 환경에 `terraform` 바이너리가 없어
+실행하지 못했다 — apply 전에 `terraform -chdir=aws-observability init -backend=false
+&& terraform -chdir=aws-observability validate` 로 별도 확인 필요.

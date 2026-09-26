@@ -41,6 +41,10 @@ output "grafana_role_arn" {
   value = module.observability.grafana_role_arn
 }
 
+output "eso_role_arn" {
+  value = module.observability.eso_role_arn
+}
+
 output "data_protection_audit_log_group_name" {
   description = "마스킹 감지 기록. 여기에 이벤트가 쌓이면 실제로 걸리고 있다는 뜻이다"
   value       = module.observability.data_protection_audit_log_group_name
