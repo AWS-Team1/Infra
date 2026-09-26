@@ -55,6 +55,12 @@ module "observability" {
   collector_service_account = "otel-collector"
   grafana_service_account   = "grafana"
 
+  # gitops 의 boa-external-secrets Application(overlays/eks/applications/
+  # observability-platform.yaml)의 destination.namespace · serviceAccount.name
+  # 과 일치해야 한다.
+  eso_namespace       = "external-secrets"
+  eso_service_account = "external-secrets"
+
   # 로그 보존 — 컨트롤 플레인 로그가 30일이므로 앱 로그도 같이 맞춘다.
   # 감사 기록만 90일로 길게 둔다.
   application_log_retention_days = 30

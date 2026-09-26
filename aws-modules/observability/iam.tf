@@ -111,21 +111,6 @@ resource "aws_iam_policy" "collector" {
           Resource = "*"
         },
 
-        # 와탭 라이선스 키를 Secrets Store CSI 로 마운트할 때 쓴다.
-        # 경로는 /boa/observability* 로 좁힌다 — 앱 시크릿(/boa/application)은 못 읽는다.
-        {
-          Sid    = "ReadObservabilitySecrets"
-          Effect = "Allow"
-
-          Action = [
-            "secretsmanager:GetSecretValue",
-            "secretsmanager:DescribeSecret",
-          ]
-
-          Resource = [
-            "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${var.secret_path_prefix}*"
-          ]
-        },
       ],
 
       # 텔레메트리 장기 보관을 쓸 때만 S3 쓰기를 준다. 읽기·삭제는 주지 않는다 —
@@ -306,6 +291,93 @@ resource "aws_eks_pod_identity_association" "grafana" {
 
   tags = {
     Name = "${var.cluster_name}-grafana-pia"
+  }
+}
+
+
+# ===================================================
+# EXTERNAL SECRETS OPERATOR — EKS Pod Identity
+# ===================================================
+
+# ESO 컨트롤러가 Secrets Manager 를 읽는 역할. 이전에는 수집기 역할의
+# ReadObservabilitySecrets 문이 이 권한을 대신했다(Secrets Store CSI 볼륨을
+# 마운트하는 파드 자격증명으로 읽었기 때문). ESO 도입 후 컨트롤러 자신이
+# 직접 읽으므로 그 문을 빼고 여기로 옮겼다 — gitops 변경 내역 11.7 참조.
+resource "aws_iam_role" "eso" {
+  name = "${var.cluster_name}-external-secrets-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Service = "pods.eks.amazonaws.com"
+        }
+
+        Action = [
+          "sts:AssumeRole",
+          "sts:TagSession"
+        ]
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.cluster_name}-external-secrets-role"
+  }
+}
+
+# 경로는 /boa/observability* 로 좁힌다 — 앱 시크릿(/boa/application)은 못 읽는다.
+# ClusterSecretStore 의 conditions.namespaces 가 참조 가능한 네임스페이스를
+# monitoring · whatap-monitoring 으로 한번 더 좁혀 두 겹으로 막는다.
+resource "aws_iam_policy" "eso" {
+  name        = "${var.cluster_name}-external-secrets-policy"
+  description = "External Secrets Operator: read /boa/observability* only"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadObservabilitySecrets"
+        Effect = "Allow"
+
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ]
+
+        Resource = [
+          "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${var.secret_path_prefix}*"
+        ]
+      },
+    ]
+  })
+
+  tags = {
+    Name = "${var.cluster_name}-external-secrets-policy"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "eso" {
+  role       = aws_iam_role.eso.name
+  policy_arn = aws_iam_policy.eso.arn
+}
+
+# gitops 의 boa-external-secrets Application 이 serviceAccount.name 을
+# external-secrets 로 고정해 둔다. 여기와 어긋나면 조용히 자격증명이 안 붙는다.
+resource "aws_eks_pod_identity_association" "eso" {
+  cluster_name    = var.cluster_name
+  namespace       = var.eso_namespace
+  service_account = var.eso_service_account
+
+  role_arn = aws_iam_role.eso.arn
+
+  tags = {
+    Name = "${var.cluster_name}-external-secrets-pia"
   }
 }
 

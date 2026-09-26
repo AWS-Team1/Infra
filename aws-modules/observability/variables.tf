@@ -43,6 +43,18 @@ variable "grafana_service_account" {
   default     = "grafana"
 }
 
+variable "eso_namespace" {
+  description = "External Secrets Operator 컨트롤러가 들어갈 네임스페이스"
+  type        = string
+  default     = "external-secrets"
+}
+
+variable "eso_service_account" {
+  description = "External Secrets Operator 컨트롤러의 ServiceAccount 이름. gitops 의 boa-external-secrets Application(serviceAccount.name)과 반드시 일치해야 한다"
+  type        = string
+  default     = "external-secrets"
+}
+
 
 # ---------------------------------------------------------
 # 로그 보존
