@@ -56,64 +56,275 @@ jobs:
       - name: Validate
         run: terraform -chdir="${{ matrix.root }}" validate
 
-  apply:
-    name: Sequential AWS Apply
+  apply_persistent:
+    name: Apply - persistent
     needs: validate
     if: ${{ inputs.confirm == true }}
     runs-on: ubuntu-latest
     environment: dev-infra
-    timeout-minutes: 180
+    timeout-minutes: 30
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
     steps:
       - name: Checkout Infra
         uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
       - name: Verify AWS identity
         shell: bash
-        run: |
-          set -euo pipefail
-          test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
-
-      - uses: hashicorp/setup-terraform@v3
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply persistent
+        run: bash scripts/terraform-aws-root.sh plan-apply persistent
 
-      - name: Apply AWS roots in dependency order
+  apply_aws_state_backup:
+    name: Apply - aws-state-backup
+    needs: validate
+    if: ${{ inputs.confirm == true }}
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
         shell: bash
-        run: |
-          set -euo pipefail
-          for root in persistent aws-state-backup aws-core aws-rds aws-cache aws-ops aws-eks; do
-            bash scripts/terraform-aws-root.sh plan-apply "$root"
-          done
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-state-backup
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-state-backup
 
+  apply_aws_core:
+    name: Apply - aws-core
+    needs: validate
+    if: ${{ inputs.confirm == true }}
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-core
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-core
+
+  apply_aws_rds:
+    name: Apply - aws-rds
+    needs: apply_aws_core
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 90
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-rds
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-rds
+
+  apply_aws_cache:
+    name: Apply - aws-cache
+    needs: apply_aws_core
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-cache
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-cache
+
+  apply_aws_ops:
+    name: Apply - aws-ops
+    needs: apply_aws_core
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-ops
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-ops
+
+  apply_aws_eks:
+    name: Apply - aws-eks
+    needs: apply_aws_core
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 120
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-eks
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-eks
+
+  apply_aws_eks_platform:
+    name: Apply - aws-eks-platform
+    needs:
+      - apply_aws_core
+      - apply_aws_eks
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 60
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
       - name: Grant temporary runner access to EKS
-        shell: bash
         run: bash scripts/eks-runner-access.sh grant
-
-      - name: Apply EKS platform
-        shell: bash
+      - name: Apply aws-eks-platform
         run: bash scripts/terraform-aws-root.sh plan-apply aws-eks-platform
-
-      - name: Apply DB bootstrap binding
-        shell: bash
-        run: bash scripts/terraform-aws-root.sh plan-apply aws-db-bootstrap
-
       - name: Restore baseline EKS access CIDRs
         if: ${{ always() }}
-        shell: bash
         run: bash scripts/eks-runner-access.sh restore
+
+  apply_aws_db_bootstrap:
+    name: Apply - aws-db-bootstrap
+    needs:
+      - apply_persistent
+      - apply_aws_rds
+      - apply_aws_eks
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout Infra
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+      - name: Verify AWS identity
+        shell: bash
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$EXPECTED_AWS_ACCOUNT_ID"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - name: Apply aws-db-bootstrap
+        run: bash scripts/terraform-aws-root.sh plan-apply aws-db-bootstrap
 
   backup-state:
     name: Backup Terraform State
-    needs: apply
-    if: ${{ needs.apply.result == 'success' && inputs.confirm == true }}
+    needs:
+      - apply_persistent
+      - apply_aws_state_backup
+      - apply_aws_core
+      - apply_aws_rds
+      - apply_aws_cache
+      - apply_aws_ops
+      - apply_aws_eks
+      - apply_aws_eks_platform
+      - apply_aws_db_bootstrap
+    if: ${{ inputs.confirm == true && needs.apply_persistent.result == 'success' && needs.apply_aws_state_backup.result == 'success' && needs.apply_aws_core.result == 'success' && needs.apply_aws_rds.result == 'success' && needs.apply_aws_cache.result == 'success' && needs.apply_aws_ops.result == 'success' && needs.apply_aws_eks.result == 'success' && needs.apply_aws_eks_platform.result == 'success' && needs.apply_aws_db_bootstrap.result == 'success' }}
     runs-on: ubuntu-latest
     environment: dev-infra
     timeout-minutes: 30
