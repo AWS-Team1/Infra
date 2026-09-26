@@ -8,6 +8,16 @@ on:
         required: true
         default: false
         type: boolean
+      allow_destructive_apply:
+        description: "삭제 또는 리소스 교체가 포함된 Terraform Apply 허용"
+        required: true
+        default: false
+        type: boolean
+      destructive_confirmation_text:
+        description: "파괴적 Apply 허용 시 정확히 ALLOW-DESTRUCTIVE-APPLY 입력"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +33,7 @@ env:
   TERRAFORM_VERSION: "1.16.2"
   EXPECTED_AWS_ACCOUNT_ID: "769413326616"
   EKS_CLUSTER_NAME: "boa-eks"
+  ALLOW_DESTRUCTIVE_APPLY: ${{ inputs.allow_destructive_apply == true && inputs.destructive_confirmation_text == 'ALLOW-DESTRUCTIVE-APPLY' && 'true' || 'false' }}
 
 jobs:
   validate:
