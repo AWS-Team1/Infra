@@ -50,25 +50,6 @@ resource "aws_secretsmanager_secret_version" "valkey_credentials" {
   secret_string_wo_version = local.valkey_credentials_version
 }
 
-# Migration-only ownership for the former active user. Keeping it managed
-# avoids an orphaned AWS resource and lets routine aws-cache destroy remove it.
-# It is deliberately excluded from the active User Group below.
-resource "aws_elasticache_user" "valkey_legacy" {
-  user_id       = "boa-app"
-  user_name     = "boa-app"
-  access_string = "on ~* +@all"
-  engine        = "valkey"
-
-  passwords_wo         = ephemeral.random_password.valkey.result
-  passwords_wo_version = local.valkey_credentials_version
-
-  tags = {
-    Name = "boa-app"
-  }
-
-  depends_on = [aws_secretsmanager_secret_version.valkey_credentials]
-}
-
 # =========================================================
 # ElastiCache Serverless Valkey
 # - 로그인 Session / Cache 용도

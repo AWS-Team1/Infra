@@ -24,20 +24,3 @@ removed {
     destroy = false
   }
 }
-
-# Changing boa-app to redis requires a new physical ElastiCache user. Forget
-# the old address without deleting the physical user, then declaratively import
-# it at the migration-only root address. Unlike a direct moved block, this
-# re-read does not carry the legacy plaintext password into the new state.
-removed {
-  from = module.elasticache.aws_elasticache_user.app
-
-  lifecycle {
-    destroy = false
-  }
-}
-
-import {
-  to = aws_elasticache_user.valkey_legacy
-  id = "boa-app"
-}
