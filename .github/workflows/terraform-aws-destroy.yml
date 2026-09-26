@@ -82,18 +82,50 @@ jobs:
         run: |
           set -euo pipefail
           destroy_core=true
-          dms_instance=$(aws dms describe-replication-instances --query "ReplicationInstances[?ReplicationInstanceIdentifier=='boa-dms'].ReplicationInstanceIdentifier" --output text)
-          dms_subnet_group=$(aws dms describe-replication-subnet-groups --query "ReplicationSubnetGroups[?ReplicationSubnetGroupIdentifier=='boa-dms-subnet-group'].ReplicationSubnetGroupIdentifier" --output text)
-          if [[ -n "$dms_instance" || -n "$dms_subnet_group" ]]; then
-            echo "DMS resources remain; aws-core will be preserved."
+          reasons=()
+
+          if [[ -z "$VPC_ID" ]]; then
+            echo "Core VPC ID is empty; aws-core will be preserved because dependency checks cannot be trusted."
             destroy_core=false
-          fi
-          if [[ -n "$VPC_ID" ]]; then
+            reasons+=("core VPC ID unavailable")
+          else
+            dms_instances=$(aws dms describe-replication-instances \
+              --query "ReplicationInstances[?ReplicationSubnetGroup.VpcId=='$VPC_ID'].ReplicationInstanceIdentifier" \
+              --output text)
+            dms_subnet_groups=$(aws dms describe-replication-subnet-groups \
+              --query "ReplicationSubnetGroups[?VpcId=='$VPC_ID'].ReplicationSubnetGroupIdentifier" \
+              --output text)
+
+            if [[ -n "$dms_instances" ]]; then
+              echo "DMS replication instances attached to core VPC: $dms_instances"
+              destroy_core=false
+              reasons+=("DMS replication instance uses core VPC")
+            else
+              echo "DMS replication instances attached to core VPC: none"
+            fi
+
+            if [[ -n "$dms_subnet_groups" ]]; then
+              echo "DMS replication subnet groups attached to core VPC: $dms_subnet_groups"
+              destroy_core=false
+              reasons+=("DMS replication subnet group uses core VPC")
+            else
+              echo "DMS replication subnet groups attached to core VPC: none"
+            fi
+
             vpn_gateways=$(aws ec2 describe-vpn-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" "Name=attachment.state,Values=attaching,attached,detaching" --query 'VpnGateways[].VpnGatewayId' --output text)
             if [[ -n "$vpn_gateways" ]]; then
-              echo "VPN gateways remain: $vpn_gateways; aws-core will be preserved."
+              echo "VPN gateways attached to core VPC: $vpn_gateways"
               destroy_core=false
+              reasons+=("VPN gateway is attached to core VPC")
+            else
+              echo "VPN gateways attached to core VPC: none"
             fi
+          fi
+
+          if [[ "$destroy_core" == "true" ]]; then
+            echo "destroy_core=true: no DMS or VPN dependency uses core VPC $VPC_ID"
+          else
+            printf 'destroy_core=false: %s\n' "$(IFS='; '; echo "${reasons[*]}")"
           fi
           echo "destroy_core=$destroy_core" >> "$GITHUB_OUTPUT"
 
