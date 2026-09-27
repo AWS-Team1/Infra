@@ -20,10 +20,10 @@ usage() {
 ACTION=${1:-}
 case "$ACTION" in
   plan-destroy)
-    allowed_roots=" aws-db-bootstrap aws-observability aws-eks-platform aws-eks aws-ops aws-cache aws-rds aws-core persistent "
+    allowed_roots=" aws-db-bootstrap aws-observability aws-infra-observability aws-eks-platform aws-eks aws-ops aws-cache aws-rds aws-core persistent "
     ;;
   apply-destroy)
-    allowed_roots=" aws-db-bootstrap aws-observability aws-eks-platform aws-eks aws-ops aws-cache aws-rds "
+    allowed_roots=" aws-db-bootstrap aws-observability aws-infra-observability aws-eks-platform aws-eks aws-ops aws-cache aws-rds "
     ;;
   *) usage ;;
 esac

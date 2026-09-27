@@ -406,7 +406,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          roots=(aws-db-bootstrap aws-observability)
+          roots=(aws-db-bootstrap aws-observability aws-infra-observability)
           if [[ "${{ steps.eks.outputs.exists }}" == "true" ]]; then
             roots+=(aws-eks-platform)
           fi
@@ -427,7 +427,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          roots=(aws-db-bootstrap aws-observability)
+          roots=(aws-db-bootstrap aws-observability aws-infra-observability)
           if [[ "${{ steps.eks.outputs.exists }}" == "true" ]]; then
             roots+=(aws-eks-platform)
           fi

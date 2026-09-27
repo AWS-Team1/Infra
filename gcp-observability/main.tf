@@ -53,8 +53,8 @@ locals {
   # (네임스페이스, KSA) 조합이라 그렇다. boa-whatap-host·boa-whatap-port는
   # monitoring과 같은 시크릿을 공유하지만, 이 네임스페이스의 KSA용으로 별도
   # 바인딩이 또 필요하다.
-  whatap_monitoring_namespace              = "whatap-monitoring"
-  whatap_credentials_sync_service_account  = "whatap-credentials-sync"
+  whatap_monitoring_namespace             = "whatap-monitoring"
+  whatap_credentials_sync_service_account = "whatap-credentials-sync"
 
   whatap_k8s_secret_ids = [
     "boa-whatap-kubernetes-license",

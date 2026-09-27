@@ -53,6 +53,8 @@ jobs:
             gcp-core \
             gcp-cloudsql \
             gcp-ops \
+            gcp-observability \
+            gcp-infra-observability \
             gcp-gke \
             gcp-modules
           do
@@ -79,6 +81,8 @@ jobs:
           - gcp-core
           - gcp-cloudsql
           - gcp-ops
+          - gcp-observability
+          - gcp-infra-observability
           - gcp-gke
 
     steps:
@@ -440,7 +444,168 @@ jobs:
 
 
   # =========================================================
-  # 5. GCP GKE
+  # 5. GCP OBSERVABILITY
+  #
+  # GKE Workload Identity 기반 Secret Manager/telemetry IAM
+  # =========================================================
+  gcp-observability:
+    name: GCP Observability
+    needs: gcp-cloudsql
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+
+    env:
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "769413326616"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: GCP Observability - Init
+        working-directory: gcp-observability
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: GCP Observability - Plan
+        working-directory: gcp-observability
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan -input=false -lock-timeout=5m -out=tfplan
+
+      - name: GCP Observability - Show Plan
+        working-directory: gcp-observability
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: GCP Observability - Apply
+        working-directory: gcp-observability
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -lock-timeout=5m tfplan
+
+      - name: GCP Observability - Outputs
+        working-directory: gcp-observability
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 6. GCP INFRA OBSERVABILITY
+  #
+  # GKE 내부 관측 root와 분리된 Cloud Monitoring dashboard
+  # =========================================================
+  gcp-infra-observability:
+    name: GCP Infra Observability
+    needs: gcp-ops
+
+    runs-on: ubuntu-latest
+    environment: dev-infra
+    timeout-minutes: 30
+
+    env:
+      TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "769413326616"
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "769413326616"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: GCP Infra Observability - Init
+        working-directory: gcp-infra-observability
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+
+      - name: GCP Infra Observability - Plan
+        working-directory: gcp-infra-observability
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan
+
+      - name: GCP Infra Observability - Show Plan
+        working-directory: gcp-infra-observability
+        shell: bash
+        run: terraform show -no-color tfplan
+
+      - name: GCP Infra Observability - Apply
+        working-directory: gcp-infra-observability
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply \
+            -input=false \
+            -lock-timeout=5m \
+            tfplan
+
+      - name: GCP Infra Observability - Outputs
+        working-directory: gcp-infra-observability
+        shell: bash
+        run: terraform output
+
+
+  # =========================================================
+  # 7. GCP GKE
   #
   # gcp-core state 필요
   #
@@ -450,7 +615,7 @@ jobs:
   # =========================================================
   gcp-gke:
     name: GCP GKE
-    needs: gcp-ops
+    needs: [gcp-ops, gcp-observability]
 
     runs-on: ubuntu-latest
     environment: dev-infra
@@ -579,4 +744,3 @@ jobs:
             --region "${{ vars.GCP_REGION }}" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --format="table(name,status,currentMasterVersion,currentNodeVersion)"
-            

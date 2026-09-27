@@ -14,7 +14,7 @@ case "$ACTION" in
 esac
 
 case "$ROOT" in
-  persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap|aws-observability) ;;
+  persistent|aws-state-backup|aws-core|aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap|aws-observability|aws-infra-observability) ;;
   *) echo "unsupported Terraform root: $ROOT" >&2; exit 2 ;;
 esac
 
@@ -64,7 +64,7 @@ case "$ACTION" in
 
     destructive_root_enabled=false
     case "$ROOT" in
-      aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap|aws-observability)
+      aws-rds|aws-cache|aws-ops|aws-eks|aws-eks-platform|aws-db-bootstrap|aws-observability|aws-infra-observability)
         destructive_root_enabled=true
         ;;
     esac

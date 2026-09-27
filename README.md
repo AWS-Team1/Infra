@@ -19,6 +19,9 @@ S3와 GCP Tokyo GCS에 동일한 bundle로 보관합니다. 저장소 최상위�
 | `aws-eks-platform` | `aws/eks-platform/terraform.tfstate` | AWS Load Balancer Controller Helm/SA·CSI RBAC | kubernetes · helm | core · eks |
 | `aws-db-bootstrap` | `aws/db-bootstrap/terraform.tfstate` | DB bootstrap IAM·Pod Identity | aws | eks · rds · persistent Secret 조회 |
 | `aws-observability` | `aws/observability/terraform.tfstate` | CloudWatch·IAM·Pod Identity·Grafana ALB/Route53 연결 | aws | core · eks · ops |
+| `aws-infra-observability` | `aws/infra-observability/terraform.tfstate` | EKS 밖 RDS·ALB·NAT·VPN·DMS·ElastiCache·S3 CloudWatch dashboard | aws | — |
+| `gcp-observability` | `gcp/observability/terraform.tfstate` | GKE Workload Identity·Secret Manager·Cloud Logging/Monitoring IAM | google | cloudsql · 수동 Whatap Secret |
+| `gcp-infra-observability` | `gcp/infra-observability/terraform.tfstate` | GKE 밖 Cloud SQL·LB·NAT·VPN·Storage Cloud Monitoring dashboard | google | Monitoring API |
 | `gcp-state-backup` | `gcp/state-backup/terraform.tfstate` | AWS state DR backup GCS | google | AWS/GCP application roots와 독립 |
 
 Valkey의 credentials/runtime Secret 계약, ephemeral/write-only 비밀번호 전달과 기존
@@ -36,9 +39,10 @@ Code Server bootstrap 값을 포함하고, CI는 동일한 `env/backend.hcl`을 
 정상 적용은 root dependency를 GitHub Actions `needs`로 표현한 병렬 DAG입니다.
 
 ```text
-AWS Validate(10 roots)
+AWS Validate(11 roots)
 ├─ persistent ────────────────────────────┐
 ├─ aws-state-backup ──────────────────────┤
+├─ aws-infra-observability ───────────────┤
 └─ aws-core                               │
    ├─ aws-rds ───────────────┐            │
    ├─ aws-cache                           │
@@ -70,7 +74,7 @@ GCS Validate ── gcp-state-backup ─────────┤
    → Karpenter NodePool 삭제 → NodeClaim 종료 대기 → EC2NodeClass 삭제
    → controller가 생성한 ALB/Target Group/Security Group/ENI/EC2/Instance Profile 정리 대기)
 → 전체 root destroy plan 사전 검증
-→ aws-db-bootstrap → aws-observability → aws-eks-platform → aws-eks → aws-ops
+→ aws-db-bootstrap → aws-observability → aws-infra-observability → aws-eks-platform → aws-eks → aws-ops
 → aws-cache → aws-rds → aws-core(DMS/VPN dependency가 없을 때만)
 → persistent(full_teardown=true만)
 → 삭제 결과 검증 → 클러스터가 남아 있으면 기준 CIDR 복원
@@ -92,6 +96,11 @@ CSI RBAC root이므로 Apply/Destroy 수명주기에 계속 포함합니다.
 `aws-observability` 자체는 AWS provider만 사용하며 Apply는 `aws-eks`와 `aws-ops` 완료 후
 가능합니다. 다만 Grafana workload와 TargetGroupBinding을 수동 GitOps 절차로 배포할 때는
 LBC가 준비된 `aws-eks-platform` 완료 이후에 수행해야 합니다.
+
+`gcp-observability`는 GKE Workload Identity와 Secret Manager/telemetry IAM을 소유하고,
+`aws-infra-observability`와 `gcp-infra-observability`는 각각 클러스터 밖 CSP native
+dashboard만 소유합니다. dashboard root는 SEARCH/Monitoring filter로 현재 리소스를
+자동 발견하므로 RDS·Cloud SQL 등의 remote state에 의존하지 않습니다.
 
 `persistent`는 routine destroy에서 보존하며, `full_teardown=true`를 명시적으로 선택한 경우에만
 마지막에 삭제합니다. 여기에는 WhaTap/Grafana Secret container와 telemetry archive S3도
@@ -123,7 +132,8 @@ access, public access prevention enforced, versioning을 사용하며 lifecycle 
 
 GCS destination은 GCP project ID를 포함한
 `boa-terraform-state-backup-kdt4-1-506106`이며 location은 `ASIA-NORTHEAST1`입니다.
-GCP application roots(`gcp-core`, `gcp-cloudsql`, `gcp-ops`, `gcp-gke`)와 lifecycle상 독립입니다.
+GCP application roots(`gcp-core`, `gcp-cloudsql`, `gcp-ops`, `gcp-observability`,
+`gcp-gke`, `gcp-infra-observability`)와 lifecycle상 독립입니다.
 
 Apply workflow는 모든 Terraform root 적용이 성공한 실제 Apply에서만 별도 runner의
 `backup-state` job을 실행합니다. `scripts/collect-terraform-state-backup.sh`는 기존 backend를
@@ -147,7 +157,8 @@ terraform-state-backups/20260926T051500Z/<github-sha>/
 ├── aws-eks.tfstate
 ├── aws-eks-platform.tfstate
 ├── aws-db-bootstrap.tfstate
-└── aws-observability.tfstate
+├── aws-observability.tfstate
+└── aws-infra-observability.tfstate
 ```
 
 `metadata.json`에는 UTC timestamp, GitHub SHA/run ID/ref, AWS account ID, source repository와
