@@ -41,15 +41,8 @@ module "rds" {
   enable_logical_replication = true
 }
 
-data "aws_route53_zone" "private" {
-  # 이 루트보다 먼저 기존 VPC에 연결되어 있어야 한다. aws-db-bootstrap은 실행 순서가 늦다.
-  name         = "${module.environment.private_zone_name}."
-  private_zone = true
-  vpc_id       = data.terraform_remote_state.core.outputs.vpc_id
-}
-
 resource "aws_route53_record" "database" {
-  zone_id = data.aws_route53_zone.private.zone_id
+  zone_id = module.environment.private_zone_id
   name    = "db.${module.environment.private_zone_name}"
   type    = "CNAME"
   ttl     = 60
