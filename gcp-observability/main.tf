@@ -9,8 +9,10 @@
 #   - ALB TargetGroupBinding 상당 없음 — GKE에는 Grafana를 두지 않는다
 #     (gitops 03_manifests/overlays/gke/observability/에 grafana.yaml 없음)
 #
-# 이 root가 만드는 건 딱 하나 — gitops가 참조하는 두 KSA(쿠버네티스
-# ServiceAccount)에 Workload Identity로 GCP 권한을 주는 것뿐이다.
+# 이 root가 만드는 건 딱 하나 — gitops가 참조하는 세 KSA(쿠버네티스
+# ServiceAccount: monitoring 네임스페이스의 observability-secret-sync·
+# otel-collector, whatap-monitoring 네임스페이스의 whatap-credentials-sync)
+# 에 Workload Identity로 GCP 권한을 주는 것뿐이다.
 #
 # GSA(Google Service Account)를 따로 만들지 않는다. gcp-cloudsql/main.tf의
 # google_secret_manager_secret_iam_member.gke 와 같은 패턴 — KSA의 workload
@@ -43,6 +45,22 @@ locals {
     "boa-whatap-host",
     "boa-whatap-port",
   ]
+
+  # whatap-monitoring 네임스페이스 — 와탭 쿠버네티스 제품(K8s 에이전트) 전용.
+  # gitops의 overlays/gke/bootstrap/secrets.yaml 과 반드시 일치해야 한다.
+  # monitoring 네임스페이스의 SecretSync를 재사용할 수 없는 이유는 그 파일에
+  # 적혀 있다 — Secret이 네임스페이스를 못 넘고, Workload Identity 바인딩도
+  # (네임스페이스, KSA) 조합이라 그렇다. boa-whatap-host·boa-whatap-port는
+  # monitoring과 같은 시크릿을 공유하지만, 이 네임스페이스의 KSA용으로 별도
+  # 바인딩이 또 필요하다.
+  whatap_monitoring_namespace              = "whatap-monitoring"
+  whatap_credentials_sync_service_account  = "whatap-credentials-sync"
+
+  whatap_k8s_secret_ids = [
+    "boa-whatap-kubernetes-license",
+    "boa-whatap-host",
+    "boa-whatap-port",
+  ]
 }
 
 
@@ -57,6 +75,22 @@ resource "google_secret_manager_secret_iam_member" "observability_whatap" {
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${local.workload_identity_pool}/subject/ns/${local.observability_namespace}/sa/${local.secret_sync_service_account}"
+}
+
+
+# ===================================================
+# whatap-credentials-sync KSA (whatap-monitoring 네임스페이스) —
+# 와탭 쿠버네티스 제품 자격증명(gitops overlays/gke/bootstrap/secrets.yaml
+# 의 SecretProviderClass/SecretSync) 읽기
+# ===================================================
+
+resource "google_secret_manager_secret_iam_member" "whatap_monitoring_whatap" {
+  for_each = toset(local.whatap_k8s_secret_ids)
+
+  project   = var.gcp_project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "principal://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${local.workload_identity_pool}/subject/ns/${local.whatap_monitoring_namespace}/sa/${local.whatap_credentials_sync_service_account}"
 }
 
 
