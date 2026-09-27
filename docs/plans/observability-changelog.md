@@ -293,3 +293,23 @@ gitops의 EKS OTel Gateway에서 CloudWatch Logs·EMF 전송을 임시 중단했
 `aws-observability`의 `enable_log_data_protection` 기본값을 `false`로 바꿨다.
 기존 로그 그룹과 IAM 리소스는 삭제하지 않고 보존하며, 실패했던 데이터 보호 정책
 2개만 더 이상 생성하지 않는다. Whatap·S3 전송과 Collector의 사전 redaction은 유지한다.
+
+---
+
+## 9. 와탭·Grafana 시크릿을 Terraform 관리 대상에서 제외 (2026-09-27)
+
+와탭·Grafana 계정은 콘솔에서 이미 만든 것을 그대로 쓰기로 팀이 확정했다
+(ECR과 같은 패턴 — AGENTS.md 규칙 4). 7항에서 "값은 out-of-band로 채우되
+컨테이너는 Terraform이 만든다"고 했던 전제가 바뀐 것이다.
+
+- `aws-observability/main.tf`: `aws_secretsmanager_secret.whatap`·`.grafana`
+  리소스 삭제. 콘솔에서 만든 것과 이름이 겹치면 apply 시
+  `ResourceExistsException`이 난다(JWT 시크릿에서 겪은 것과 같은 종류의 문제).
+- `aws-observability/outputs.tf`: 그 두 리소스를 참조하던 `secret_fill_commands`
+  출력 삭제. unmask 정책 확인 명령만 `unmask_policy_check_command`로 남긴다.
+- IAM 쪽(`aws-modules/observability/iam.tf`)은 변경 없음 — `secret_path_prefix`
+  와일드카드로 권한을 주기 때문에 시크릿을 누가 만들었는지와 무관하게
+  그대로 동작한다.
+- `aws_secretsmanager_secret.whatap`·`.grafana`의 실제 값(라이선스 키·
+  비밀번호)은 이미 콘솔에 들어있다는 전제다. 아직이라면 그쪽에서 먼저
+  채워야 한다 — Terraform은 더 이상 이 시크릿의 존재를 보장하지 않는다.

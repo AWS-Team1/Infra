@@ -85,34 +85,13 @@ module "observability" {
 # ===================================================
 # SECRETS MANAGER — 와탭 라이선스 키 · Grafana 관리자 비밀번호
 # ===================================================
-
-# 값은 Terraform 이 넣지 않는다. 껍데기만 만들고 사람이 콘솔이나 CLI 로 채운다.
-# tfvars 나 state 에 라이선스 키가 들어가지 않게 하려는 것이다 —
-# state 는 S3 에 암호화되어 있지만 plan 출력과 CI 로그에는 남는다.
 #
-# 채우는 명령은 outputs.tf 의 secret_fill_commands 가 그대로 출력한다.
-resource "aws_secretsmanager_secret" "whatap" {
-  name        = "/boa/observability/whatap"
-  description = "WhaTap license keys. Values are set out-of-band, never by Terraform."
-
-  # 실습 환경이라 짧게 둔다. 지운 뒤 같은 이름을 바로 다시 쓸 수 있다.
-  recovery_window_in_days = 0
-
-  tags = {
-    Name = "boa-observability-whatap"
-  }
-}
-
-resource "aws_secretsmanager_secret" "grafana" {
-  name        = "/boa/observability/grafana"
-  description = "Grafana admin credentials. Values are set out-of-band, never by Terraform."
-
-  recovery_window_in_days = 0
-
-  tags = {
-    Name = "boa-observability-grafana"
-  }
-}
+# Terraform이 만들지 않는다. 콘솔에서 이미 만든 /boa/observability/whatap ·
+# /boa/observability/grafana 를 그대로 쓰기로 결정했다(2026-09-26, ECR과
+# 같은 패턴 — AGENTS.md 규칙 4). 여기서 aws_secretsmanager_secret 리소스로
+# 다시 선언하면 콘솔에서 만든 것과 이름이 겹쳐 apply 시 ResourceExistsException
+# 이 난다. IAM 쪽은 이름이 아니라 secret_path_prefix("/boa/observability")
+# 와일드카드로 권한을 주므로, 누가 만들었는지와 무관하게 그대로 동작한다.
 
 
 # ===================================================
