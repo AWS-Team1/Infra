@@ -40,13 +40,8 @@ module "network" {
 }
 
 # 기존 Private Hosted Zone 을 새 VPC에 다시 연결한다.
-data "aws_route53_zone" "boa_internal" {
-  name         = "${module.environment.private_zone_name}."
-  private_zone = true
-}
-
 resource "aws_route53_zone_association" "boa_internal" {
-  zone_id    = data.aws_route53_zone.boa_internal.zone_id
+  zone_id    = module.environment.private_zone_id
   vpc_id     = module.network.vpc_id
   vpc_region = module.environment.aws_region
 }
