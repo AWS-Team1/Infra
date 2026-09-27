@@ -494,28 +494,18 @@ jobs:
           fi
 
           telemetry_bucket="boa-telemetry-archive-$EXPECTED_AWS_ACCOUNT_ID"
+
+          # 와탭·Grafana 계정은 콘솔에서 만든 진짜 콘솔 전용 시크릿이다(2026-09-27,
+          # ECR과 같은 패턴 — AGENTS.md 규칙 4). Terraform은 이제 이 둘을 전혀
+          # 모른다(persistent에서도 완전히 뺐다) — full_teardown 을 포함해 어떤
+          # destroy 경로로도 지워지지 않아야 정상이다. full_teardown 여부와
+          # 무관하게 항상 "존재해야 한다"로 고정한다. CI가 이 시크릿을 지우는
+          # 경로는 어디에도 없다 — 여기는 사라졌는지/남았는지 확인만 한다.
           for secret in /boa/observability/whatap /boa/observability/grafana; do
-            if [[ "${{ inputs.full_teardown }}" == "true" ]]; then
-              deadline=$(( $(date +%s) + 120 ))
-              while :; do
-                if secret_output=$(aws secretsmanager describe-secret --secret-id "$secret" 2>&1); then
-                  (( $(date +%s) < deadline )) || {
-                    echo "Persistent Secret still exists after full teardown: $secret" >&2
-                    failed=1
-                    break
-                  }
-                  sleep 5
-                elif grep -q 'ResourceNotFoundException' <<<"$secret_output"; then
-                  break
-                else
-                  echo "$secret_output" >&2
-                  failed=1
-                  break
-                fi
-              done
-            else
-              aws secretsmanager describe-secret --secret-id "$secret" >/dev/null 2>&1 || failed=1
-            fi
+            aws secretsmanager describe-secret --secret-id "$secret" >/dev/null 2>&1 || {
+              echo "Console-managed Secret missing, must never be deleted: $secret" >&2
+              failed=1
+            }
           done
           telemetry_buckets=$(aws s3api list-buckets \
             --query "Buckets[?Name=='$telemetry_bucket'].Name" --output text)
