@@ -151,4 +151,8 @@ resource "aws_cloudwatch_log_data_protection_policy" "emf" {
 
   log_group_name  = aws_cloudwatch_log_group.emf.name
   policy_document = jsonencode(local.data_protection_policy)
+
+  depends_on = [
+    aws_cloudwatch_log_data_protection_policy.application
+  ]
 }
