@@ -256,19 +256,6 @@ resource "aws_iam_policy" "grafana" {
 
         Resource = "*"
       },
-      {
-        Sid    = "ReadGrafanaSecrets"
-        Effect = "Allow"
-
-        Action = [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ]
-
-        Resource = [
-          "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${var.secret_path_prefix}*"
-        ]
-      },
     ]
   })
 

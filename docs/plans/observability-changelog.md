@@ -274,8 +274,9 @@ External Secrets Operator(ESO)로 옮겼다(gitops `docs/observability-changelog
     (ns `external-secrets`, sa `external-secrets` — gitops 의
     `boa-external-secrets` Application 이 `serviceAccount.name` 을 그 값으로
     고정해 둔다)
-  - 삭제 — `aws_iam_policy.collector` 의 `ReadObservabilitySecrets` 문. 수집기
-    SA(파드 4종 공유)는 더는 Secrets Manager 를 직접 읽지 않는다.
+  - 삭제 — `aws_iam_policy.collector` 의 `ReadObservabilitySecrets` 문과
+    `aws_iam_policy.grafana` 의 `ReadGrafanaSecrets` 문. 수집기와 Grafana는
+    ESO가 만든 Kubernetes Secret을 읽으므로 Secrets Manager에 직접 접근하지 않는다.
 - `aws-modules/observability/variables.tf`: `eso_namespace`·`eso_service_account`
   추가 (기본값 둘 다 `external-secrets`).
 - `aws-observability/main.tf`·`outputs.tf`: 위 두 변수를 명시적으로 전달하고
@@ -291,3 +292,17 @@ Secrets Manager 쪽 리소스(`aws_secretsmanager_secret.whatap`·`.grafana`)와
 `terraform fmt`/`validate`는 이 세션 환경에 `terraform` 바이너리가 없어
 실행하지 못했다 — apply 전에 `terraform -chdir=aws-observability init -backend=false
 && terraform -chdir=aws-observability validate` 로 별도 확인 필요.
+
+---
+
+## 8. CloudWatch 데이터 보호 정책 임시 비활성화 (2026-09-26)
+
+gitops의 EKS OTel Gateway에서 CloudWatch Logs·EMF 전송을 임시 중단했다. 이에 맞춰
+`aws-observability`의 `enable_log_data_protection` 기본값을 `false`로 바꿨다.
+기존 로그 그룹과 IAM 리소스는 삭제하지 않고 보존하며, 실패했던 데이터 보호 정책
+2개만 더 이상 생성하지 않는다. Whatap·S3 전송과 Collector의 사전 redaction은 유지한다.
+
+> **`feature/final-infra-integration` 미반영.** final에는 ESO 권한 변경만 가져오고
+> `enable_log_data_protection` 기본값은 `true`로 유지했다. final은 이 값이 `true`인 상태로
+> clean Apply에 성공했고, 로그 마스킹을 끄는 것은 팀 합의가 필요한 보안 정책 변경이기
+> 때문이다. 끄기로 합의하면 `aws-observability/variables.tf`의 기본값만 바꾸면 된다.
