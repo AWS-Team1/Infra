@@ -1,31 +1,18 @@
-# Observability archive and secret containers survive the routine AWS teardown.
-# They are removed only by the explicitly confirmed full_teardown path.
+# Observability archive survives the routine AWS teardown. It is removed only
+# by the explicitly confirmed full_teardown path.
+#
+# 와탭·Grafana 계정은 콘솔에서 만든 진짜 콘솔 전용 시크릿을 그대로 쓰기로
+# 팀이 확정했다(2026-09-27, ECR과 같은 패턴 — AGENTS.md 규칙 4). 이전에는
+# 여기서 aws_secretsmanager_secret.observability_whatap/.observability_grafana
+# 컨테이너를 만들었지만, 이미 apply되어 실제 값이 채워진 콘솔 시크릿과 별개로
+# Terraform이 같은 이름을 다시 선언하면 안 된다. 코드 삭제 전에 반드시
+# `terraform state rm aws_secretsmanager_secret.observability_whatap` ·
+# `... .observability_grafana` 로 state에서만 먼저 떼어내야 한다 — 순서를
+# 반대로 하면 다음 apply가 이미 값이 채워진 실제 시크릿을 destroy한다.
 data "aws_caller_identity" "current" {}
 
 locals {
   telemetry_bucket_name = "${module.environment.project_name}-telemetry-archive-${data.aws_caller_identity.current.account_id}"
-}
-
-resource "aws_secretsmanager_secret" "observability_whatap" {
-  name        = "/${module.environment.project_name}/observability/whatap"
-  description = "WhaTap license keys. Values are set out-of-band, never by Terraform."
-
-  recovery_window_in_days = 0
-
-  tags = {
-    Name = "${module.environment.project_name}-observability-whatap"
-  }
-}
-
-resource "aws_secretsmanager_secret" "observability_grafana" {
-  name        = "/${module.environment.project_name}/observability/grafana"
-  description = "Grafana admin credentials. Values are set out-of-band, never by Terraform."
-
-  recovery_window_in_days = 0
-
-  tags = {
-    Name = "${module.environment.project_name}-observability-grafana"
-  }
 }
 
 resource "aws_s3_bucket" "telemetry" {

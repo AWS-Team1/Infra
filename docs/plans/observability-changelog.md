@@ -306,3 +306,32 @@ gitops의 EKS OTel Gateway에서 CloudWatch Logs·EMF 전송을 임시 중단했
 > `enable_log_data_protection` 기본값은 `true`로 유지했다. final은 이 값이 `true`인 상태로
 > clean Apply에 성공했고, 로그 마스킹을 끄는 것은 팀 합의가 필요한 보안 정책 변경이기
 > 때문이다. 끄기로 합의하면 `aws-observability/variables.tf`의 기본값만 바꾸면 된다.
+
+---
+
+## 9. 와탭·Grafana 시크릿을 Terraform 관리 대상에서 제외 (2026-09-27)
+
+와탭·Grafana 계정은 콘솔에서 만든 진짜 콘솔 전용 시크릿을 그대로 쓰기로 팀이
+확정했다(ECR과 같은 패턴 — AGENTS.md 규칙 4).
+
+**`feature/final-infra-integration`은 이미 실제로 적용되어 있어 처리가 다르다.**
+`persistent` root가 `aws_secretsmanager_secret.observability_whatap`·
+`.observability_grafana`를 이미 apply 성공시켨 값이 채워진 상태다. 코드에서
+리소스만 지우면 다음 apply가 그 실제 시크릿을 destroy한다. 그래서:
+
+1. **`terraform apply` 전에 반드시** `terraform -chdir=persistent state rm
+   aws_secretsmanager_secret.observability_whatap` ·
+   `aws_secretsmanager_secret.observability_grafana`로 state에서만 먼저
+   떼어낸다(실제 AWS 리소스는 그대로 남는다).
+2. 그 다음에야 이 커밋의 코드 변경(`persistent/observability.tf`의 두 리소스,
+   `persistent/outputs.tf`의 관련 출력 4개, `aws-observability/outputs.tf`의
+   `secret_fill_commands` 삭제)이 안전하게 반영된다.
+
+`aws-modules/observability/iam.tf`의 ESO·Grafana·Collector 권한은
+`secret_path_prefix` 와일드카드로 부여되므로 변경 없이 그대로 동작한다.
+텔레메트리 S3 버킷(`persistent/observability.tf`의 나머지 리소스)은 이번
+결정과 무관하며 그대로 유지한다.
+
+`dev-0922`/`feat/observability-stack`에서는 아직 apply된 적이 없어 코드에서
+리소스를 바로 지웠지만(같은 changelog 9항), 이 브랜치는 실제 상태가 있어
+**state rm이 선행되지 않으면 위험하다.**

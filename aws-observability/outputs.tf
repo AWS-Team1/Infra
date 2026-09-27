@@ -55,7 +55,7 @@ output "data_protection_audit_log_group_name" {
 # 감사
 # ---------------------------------------------------------
 
-# 부착 대상이 0개인 것이 정상이다. 확인 명령이 아래 secret_fill_commands 에 있다.
+# 부착 대상이 0개인 것이 정상이다. 확인 명령이 아래 unmask_policy_check_command 에 있다.
 output "logs_unmask_policy_arn" {
   description = "감사 시에만 사람이 부착한다. 평상시 부착 대상은 없어야 한다"
   value       = module.observability.logs_unmask_policy_arn
@@ -66,26 +66,13 @@ output "logs_unmask_policy_arn" {
 # apply 직후 사람이 해야 하는 일
 # ---------------------------------------------------------
 
-# Terraform 이 시크릿 값을 넣지 않으므로, 넣는 명령을 출력으로 준다.
-# 여기 실제 키가 들어가지 않는다 — 명령 문자열만 만든다.
-output "secret_fill_commands" {
-  description = "apply 후 실행해야 하는 명령. 와탭 키 두 개와 Grafana 비밀번호를 채운다"
+# 와탭·Grafana 시크릿은 콘솔에서 이미 만들어 채워둔 진짜 콘솔 전용 시크릿을
+# 그대로 쓰므로 Terraform 쪽에서 채우는 명령을 낼 필요가 없다. 남는 확인
+# 사항은 unmask 정책 부착 여부뿐이다.
+output "unmask_policy_check_command" {
+  description = "unmask 정책이 아무 역할에도 붙어 있지 않은지 확인. 출력이 비어야 정상"
 
   value = <<-EOT
-    # 1) 와탭 프로젝트 액세스 키 — 제품별로 다르다
-    #    쿠버네티스 제품 / 애플리케이션 제품 두 개를 각각 발급받아 넣는다
-    #    host/port 는 와탭 콘솔의 설치 안내에 표시된 수집 서버 값을 그대로 넣는다
-    #    (주석을 \ 뒤에 두면 줄 이음이 끊겨 명령이 두 개로 쪼개진다 — 여기 둔다)
-    aws secretsmanager put-secret-value \
-      --secret-id /${module.environment.project_name}/observability/whatap \
-      --secret-string '{"kubernetes_license":"<K8S_KEY>","application_license":"<APM_KEY>","host":"<WHATAP_HOST>","port":"<WHATAP_PORT>"}'
-
-    # 2) Grafana 관리자 비밀번호
-    aws secretsmanager put-secret-value \
-      --secret-id /${module.environment.project_name}/observability/grafana \
-      --secret-string "{\"admin_user\":\"admin\",\"admin_password\":\"$(openssl rand -base64 24)\"}"
-
-    # 3) unmask 정책이 아무 역할에도 붙어 있지 않은지 확인 — 출력이 비어야 정상
     aws iam list-entities-for-policy \
       --policy-arn ${module.observability.logs_unmask_policy_arn} \
       --query '{roles:PolicyRoles,users:PolicyUsers,groups:PolicyGroups}'
