@@ -130,7 +130,7 @@ jobs:
           echo "destroy_core=$destroy_core" >> "$GITHUB_OUTPUT"
 
   destroy:
-    name: Sequential AWS Destroy
+    name: Staged Parallel AWS Destroy
     needs: guard
     runs-on: ubuntu-latest
     environment: dev-infra
@@ -399,7 +399,10 @@ jobs:
             sleep 15
           done
 
-      - name: Preflight all root destroy plans
+      # Each root has its own backend state key and its own saved tfplan-destroy,
+      # so the plans can be built concurrently. Every root is planned before any
+      # destroy starts; a single failed plan stops the workflow here.
+      - name: Preflight all root destroy plans in parallel
         shell: bash
         run: |
           set -euo pipefail
@@ -416,35 +419,30 @@ jobs:
           if [[ "${{ inputs.full_teardown }}" == "true" ]]; then
             roots+=(persistent)
           fi
-          for root in "${roots[@]}"; do
-            bash scripts/terraform-aws-root.sh plan-destroy "$root"
-          done
+          bash scripts/run-terraform-roots-parallel.sh plan-destroy "${roots[@]}"
 
-      - name: Destroy DB bootstrap binding
-        shell: bash
-        run: bash scripts/terraform-aws-root.sh apply-destroy aws-db-bootstrap
-
-      - name: Destroy AWS observability integration
-        shell: bash
-        run: bash scripts/terraform-aws-root.sh apply-destroy aws-observability
-
-      - name: Destroy EKS platform
-        if: ${{ steps.eks.outputs.exists == 'true' }}
-        shell: bash
-        run: bash scripts/terraform-aws-root.sh apply-destroy aws-eks-platform
-
-      - name: Destroy EKS AWS infrastructure
-        shell: bash
-        run: bash scripts/terraform-aws-root.sh apply-destroy aws-eks
-
-      - name: Destroy ops, cache, RDS, and conditionally core
+      # Consumers of aws-eks, aws-rds, and aws-ops. They do not depend on each
+      # other, but all of them must be gone before the main phase starts.
+      - name: Destroy prerequisite roots in parallel
         shell: bash
         run: |
           set -euo pipefail
-          for root in aws-ops aws-cache aws-rds; do
-            bash scripts/terraform-aws-root.sh apply-destroy "$root"
-          done
+          roots=(aws-db-bootstrap aws-observability)
+          if [[ "${{ steps.eks.outputs.exists }}" == "true" ]]; then
+            roots+=(aws-eks-platform)
+          fi
+          bash scripts/run-terraform-roots-parallel.sh apply-destroy "${roots[@]}"
 
+      # These four only consume aws-core and share no Terraform or security-group
+      # references, so the long EKS and RDS deletions overlap.
+      - name: Destroy EKS, ops, cache, and RDS in parallel
+        shell: bash
+        run: bash scripts/run-terraform-roots-parallel.sh apply-destroy aws-eks aws-ops aws-cache aws-rds
+
+      - name: Wait for load balancers and conditionally destroy core
+        shell: bash
+        run: |
+          set -euo pipefail
           deadline=$(( $(date +%s) + 900 ))
           while [[ -n "$ORIGINAL_VPC_ID" ]]; do
             lbs=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$ORIGINAL_VPC_ID'].LoadBalancerArn" --output text)
