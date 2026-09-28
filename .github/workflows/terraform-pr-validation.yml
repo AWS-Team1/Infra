@@ -98,14 +98,20 @@ jobs:
 
   plan:
     name: Terraform Plan (${{ matrix.root }})
+    needs:
+      - format
+      - validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: dev-infra
 
     if: >-
       ${{
+        success() &&
+        (
         github.event_name == 'workflow_dispatch' ||
         github.event.pull_request.head.repo.full_name == github.repository
+        )
       }}
 
     permissions:
