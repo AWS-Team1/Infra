@@ -51,7 +51,7 @@ module "gke" {
 
   # VPC 의 어떤 서브넷과도 겹치지 않아야 한다. 10.10.0/16/32 대역을 피해 255 로 둔다.
   master_cidr             = "10.10.255.0/28"
-  master_authorized_cidrs = var.master_authorized_cidrs
+  master_authorized_cidrs = concat(var.master_authorized_cidrs, var.runner_authorized_cidrs)
 
   machine_type   = "e2-standard-2"
   node_count_min = 1

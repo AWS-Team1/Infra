@@ -514,7 +514,8 @@ jobs:
 
           echo "RUNNER_PUBLIC_IP=${RUNNER_IP}" >> "${GITHUB_ENV}"
 
-          echo 'TF_VAR_master_authorized_cidrs=[{"cidr_block":"'"${RUNNER_IP}"'/32","display_name":"github-actions"}]' \
+          # Only the runner entry is injected; the code-server CIDR stays in gcp-gke/variables.tf.
+          echo 'TF_VAR_runner_authorized_cidrs=[{"cidr_block":"'"${RUNNER_IP}"'/32","display_name":"github-actions"}]' \
             >> "${GITHUB_ENV}"
 
       - name: Verify GKE access variable
@@ -523,8 +524,8 @@ jobs:
           set -euo pipefail
 
           echo "Runner IP: ${RUNNER_PUBLIC_IP}"
-          echo "GKE Master Authorized CIDRs:"
-          echo "${TF_VAR_master_authorized_cidrs}"
+          echo "GKE runner authorized CIDRs (added to the code-server default):"
+          echo "${TF_VAR_runner_authorized_cidrs}"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
