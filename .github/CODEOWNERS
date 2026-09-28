@@ -1,0 +1,8 @@
+# Infra reviewers own the whole repository.
+# More specific paths are listed so ownership stays explicit if the default changes.
+*            @AWS-Team1/infra-reviewers
+
+/.github/    @AWS-Team1/infra-reviewers
+/scripts/    @AWS-Team1/infra-reviewers
+/aws-*/      @AWS-Team1/infra-reviewers
+/gcp-*/      @AWS-Team1/infra-reviewers
