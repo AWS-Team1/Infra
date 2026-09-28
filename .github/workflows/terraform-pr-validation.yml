@@ -1,0 +1,136 @@
+name: Terraform PR Validation
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - release
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-pr-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_VERSION: "1.16.2"
+
+jobs:
+  format:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Check Terraform formatting
+        shell: bash
+        run: terraform fmt -check -recursive
+
+
+  validate:
+    name: Terraform Validate (${{ matrix.root }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        root:
+          - persistent
+          - aws-state-backup
+          - aws-core
+          - aws-rds
+          - aws-cache
+          - aws-ops
+          - aws-eks
+          - aws-eks-platform
+          - aws-db-bootstrap
+          - aws-observability
+          - aws-infra-observability
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Verify GitHub Actions and Code Server contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/verify-root-contract.sh "${{ matrix.root }}"
+
+      - name: Terraform Init without backend
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform init \
+            -backend=false \
+            -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform validate -no-color
+
+
+  summary:
+    name: Terraform CI Summary
+    runs-on: ubuntu-latest
+
+    if: ${{ always() }}
+
+    needs:
+      - format
+      - validate
+
+    steps:
+      - name: Summarize validation results
+        shell: bash
+        env:
+          FORMAT_RESULT: ${{ needs.format.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Terraform PR Validation"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Terraform Format | ${FORMAT_RESULT} |"
+            echo "| Terraform Validate | ${VALIDATE_RESULT} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${FORMAT_RESULT}" != "success" ]]; then
+            echo "Terraform format check failed."
+            exit 1
+          fi
+
+          if [[ "${VALIDATE_RESULT}" != "success" ]]; then
+            echo "One or more Terraform roots failed validation."
+            exit 1
+          fi
+
+          echo "All Terraform PR validation checks passed."
+          
