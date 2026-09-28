@@ -454,7 +454,7 @@ jobs:
 
     runs-on: ubuntu-latest
     environment: dev-infra
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
       TF_VAR_gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
@@ -463,6 +463,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify GitOps token
+        shell: bash
+        env:
+          GITOPS_REPO_TOKEN: ${{ secrets.GITOPS_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GITOPS_REPO_TOKEN}"
+
+      - name: Checkout GitOps
+        uses: actions/checkout@v4
+        with:
+          repository: AWS-Team1/gitops
+          ref: dev-0922
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          persist-credentials: false
+          path: gitops
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -579,4 +596,53 @@ jobs:
             --region "${{ vars.GCP_REGION }}" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --format="table(name,status,currentMasterVersion,currentNodeVersion)"
-            
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubectl for GKE
+        uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: boa-gke
+          location: ${{ vars.GCP_REGION }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          context_name: boa-gke
+
+      - name: Wait for GKE nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl wait \
+            --for=condition=Ready \
+            nodes \
+            --all \
+            --timeout=15m
+
+      - name: Prepare GCP JWT secrets
+        shell: bash
+        run: bash gitops/02_scripts/gcp-prepare-jwt.sh
+
+      - name: Install and expose Argo CD
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash gitops/02_scripts/argocd-install.sh gcp
+          bash gitops/02_scripts/gcp-install-argocd-exposure.sh
+
+      - name: Register GitOps repository
+        shell: bash
+        env:
+          ARGOCD_REPO_URL: https://github.com/AWS-Team1/gitops.git
+          ARGOCD_REPO_USERNAME: x-access-token
+          ARGOCD_REPO_PASSWORD: ${{ secrets.GITOPS_REPO_TOKEN }}
+        run: bash gitops/02_scripts/argocd-register-repository.sh gcp
+
+      - name: Apply and verify GCP Root Application
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash gitops/02_scripts/argocd-apply-root.sh gcp
+          bash gitops/02_scripts/argocd-verify.sh gcp
