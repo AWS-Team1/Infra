@@ -20,6 +20,7 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TERRAFORM_VERSION: "1.16.2"
+  EXPECTED_AWS_ACCOUNT_ID: "769413326616"
 
 jobs:
   format:
@@ -95,6 +96,116 @@ jobs:
           terraform validate -no-color
 
 
+  plan:
+    name: Terraform Plan (${{ matrix.root }})
+    needs:
+      - format
+      - validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev-infra
+
+    if: >-
+      ${{
+        success() &&
+        (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+        )
+      }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        root:
+          - persistent
+          - aws-state-backup
+          - aws-core
+          - aws-rds
+          - aws-cache
+          - aws-ops
+          - aws-eks
+          - aws-eks-platform
+          - aws-db-bootstrap
+          - aws-observability
+          - aws-infra-observability
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "${EXPECTED_AWS_ACCOUNT_ID}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Verify GitHub Actions and Code Server contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/verify-root-contract.sh "${{ matrix.root }}"
+
+      - name: Terraform Init with remote backend
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init \
+            -reconfigure \
+            -backend-config=../env/backend.hcl \
+            -input=false
+
+      - name: Terraform Plan
+        working-directory: ${{ matrix.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +e
+          terraform plan \
+            -input=false \
+            -lock=false \
+            -detailed-exitcode \
+            -out=tfplan-ci
+          plan_status=$?
+          set -e
+
+          case "${plan_status}" in
+            0)
+              echo "No Terraform changes for ${{ matrix.root }}."
+              ;;
+            2)
+              echo "Terraform changes detected for ${{ matrix.root }}."
+              ;;
+            *)
+              echo "::error::Terraform plan failed for ${{ matrix.root }} with exit code ${plan_status}."
+              exit "${plan_status}"
+              ;;
+          esac
+
+          terraform show -no-color tfplan-ci
+
+
   summary:
     name: Terraform CI Summary
     runs-on: ubuntu-latest
@@ -104,6 +215,7 @@ jobs:
     needs:
       - format
       - validate
+      - plan
 
     steps:
       - name: Summarize validation results
@@ -111,6 +223,7 @@ jobs:
         env:
           FORMAT_RESULT: ${{ needs.format.result }}
           VALIDATE_RESULT: ${{ needs.validate.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
         run: |
           set -euo pipefail
 
@@ -121,6 +234,7 @@ jobs:
             echo "|---|---|"
             echo "| Terraform Format | ${FORMAT_RESULT} |"
             echo "| Terraform Validate | ${VALIDATE_RESULT} |"
+            echo "| Terraform Plan | ${PLAN_RESULT} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           if [[ "${FORMAT_RESULT}" != "success" ]]; then
@@ -130,6 +244,11 @@ jobs:
 
           if [[ "${VALIDATE_RESULT}" != "success" ]]; then
             echo "One or more Terraform roots failed validation."
+            exit 1
+          fi
+
+          if [[ "${PLAN_RESULT}" != "success" ]]; then
+            echo "One or more Terraform roots failed to produce a plan."
             exit 1
           fi
 
