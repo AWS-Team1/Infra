@@ -54,7 +54,7 @@ module "gke" {
   master_authorized_cidrs = concat(var.master_authorized_cidrs, var.runner_authorized_cidrs)
 
   machine_type   = "e2-standard-2"
-  node_count_min = 1
+  node_count_min = 3
   node_count_max = 4
 
   node_service_account_email = google_service_account.gke_node.email
