@@ -84,7 +84,9 @@ resource "google_container_node_pool" "main" {
   location = var.region
   cluster  = google_container_cluster.main.name
 
-  initial_node_count = var.node_count_min
+  # 리전 노드 풀이라 initial_node_count 는 존마다 적용된다. 리전의 3개 존에 나눠
+  # 전체 최소 대수만큼 바로 올라오게 한다(최소 6 → 존당 2 → 6대로 시작).
+  initial_node_count = ceil(var.node_count_min / 3)
 
   autoscaling {
     total_min_node_count = var.node_count_min
@@ -117,5 +119,10 @@ resource "google_container_node_pool" "main" {
   upgrade_settings {
     max_surge       = 1
     max_unavailable = 0
+  }
+
+  lifecycle {
+    # initial_node_count 변경은 노드 풀 교체(전 노드 재생성)를 일으킨다.
+    ignore_changes = [initial_node_count]
   }
 }
