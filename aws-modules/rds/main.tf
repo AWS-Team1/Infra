@@ -30,13 +30,80 @@ resource "aws_db_parameter_group" "main" {
 
   parameter {
     name  = "log_min_duration_statement"
-    value = "1000"
+    value = tostring(var.log_min_duration_statement_ms)
   }
 
   parameter {
     name         = "rds.logical_replication"
     value        = var.enable_logical_replication ? "1" : "0"
     apply_method = "pending-reboot"
+  }
+
+  # GCP 보안 진단(Allows unencrypted direct connections) 대응 — GCP Cloud SQL(gcp-modules/cloudsql/main.tf)
+  # 쪽과 통일. 이것도 rds.logical_replication 과 같은 정적 파라미터라 반영되려면
+  # 재부팅이 필요하다(Multi-AZ 페일오버 동반 가능) — apply만으로는 안 켜진다.
+  # ledger/accounts 앱 쪽 JDBC/psycopg2 URL에 sslmode=require 를 같이 넣어둬야
+  # 이 값이 켜진 뒤에도 연결이 끊기지 않는다(gitops/03_manifests/overlays/eks/{ledger,accounts}).
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
+  }
+
+  # ---------------------------------------------------------
+  # 감사 로깅 (관측·보안 파트 추가). 기본값은 현재 동작 유지다.
+  # ---------------------------------------------------------
+
+  # 바인딩 파라미터를 쿼리 로그에 남길 길이. 0 이면 남기지 않는다.
+  # 이 값을 0 보다 크게 두면 SQL 로그에 계좌번호 실값이 찍힌다 — 그때는
+  # CloudWatch Logs 데이터 보호 정책이 /aws/rds/... 로그 그룹에도 붙어 있어야 한다.
+  parameter {
+    name  = "log_parameter_max_length"
+    value = tostring(var.log_parameter_max_length)
+  }
+
+  parameter {
+    name  = "log_statement"
+    value = var.log_statement
+  }
+
+  # 접속·연결 종료를 남긴다. 누가 언제 DB 에 붙었는지가 감사 기본 항목이다.
+  parameter {
+    name  = "log_connections"
+    value = "1"
+  }
+
+  parameter {
+    name  = "log_disconnections"
+    value = "1"
+  }
+
+  # pgaudit 는 enable_pgaudit = true 일 때만 파라미터를 추가한다.
+  #
+  # 조건부로 둔 이유 — shared_preload_libraries 는 정적 파라미터다. 기본값과 같은
+  # 값을 명시적으로 쓰기만 해도 파라미터 그룹이 pending-reboot 로 표시될 수 있고,
+  # Multi-AZ 에서 그 재부팅은 AZ 페일오버를 동반한다. 껐을 때 plan 에 아무것도
+  # 나타나지 않아야 "안 건드렸다"가 성립한다.
+  #
+  # 켤 때 순서 — ① 이 변수를 true 로 apply → ② 인스턴스 재부팅 →
+  # ③ psql 에서 CREATE EXTENSION pgaudit;  ③을 빼면 로그가 나오지 않는다.
+  dynamic "parameter" {
+    for_each = var.enable_pgaudit ? [1] : []
+
+    content {
+      name         = "shared_preload_libraries"
+      value        = "pg_stat_statements,pgaudit"
+      apply_method = "pending-reboot"
+    }
+  }
+
+  dynamic "parameter" {
+    for_each = var.enable_pgaudit ? [1] : []
+
+    content {
+      name  = "pgaudit.log"
+      value = var.pgaudit_log_classes
+    }
   }
 
   tags = {

@@ -33,7 +33,7 @@ variable "vpc_id" {
   type = string
 }
 
-# 6379 인바운드를 허용할 프라이빗 서브넷 CIDR
+# Serverless Valkey 6379-6380 인바운드를 허용할 프라이빗 서브넷 CIDR
 variable "private_subnet_cidrs" {
   type = list(string)
 }

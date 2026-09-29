@@ -14,11 +14,12 @@ resource "google_sql_database_instance" "main" {
   database_version = var.database_version
   region           = var.region
 
-  # 대기 인스턴스를 실수로 지우는 것을 막는다. 정리할 때는 false 로 바꿔 apply 한 뒤 destroy.
+  # 삭제 정책은 호출 root가 정한다. gcp-cloudsql root는 반복 재구축을 위해 false를 사용한다.
   deletion_protection = var.deletion_protection
 
   settings {
     tier              = var.tier
+    edition           = "ENTERPRISE"
     availability_type = var.availability_type
     disk_type         = "PD_SSD"
     disk_size         = var.disk_size
@@ -32,6 +33,13 @@ resource "google_sql_database_instance" "main" {
       # VPN 너머 AWS 대역에서 오는 접속을 허용하려면 필요하다.
       # (PSA 피어링의 export_custom_routes 와 짝이다)
       enable_private_path_for_google_cloud_services = true
+
+      # GCP 보안 진단(Allows unencrypted direct connections) 대응.
+      # 클라이언트 인증서까진 요구하지 않고 TLS만 강제한다.
+      # DMS 타깃 엔드포인트는 이미 ssl_mode=require 라 영향 없음(aws-modules/dms/main.tf:128).
+      # ledger 3개 서비스는 JDBC URL에 sslmode 가 없어 이대로면 접속이 끊긴다 —
+      # gitops/03_manifests/gke/ledger/*.yaml 에 sslmode=require 를 같이 추가해야 한다.
+      ssl_mode = "ENCRYPTED_ONLY"
     }
 
     backup_configuration {
@@ -107,6 +115,7 @@ resource "google_sql_user" "dms" {
   instance            = google_sql_database_instance.main.name
   password_wo         = var.dms_password
   password_wo_version = 1
+  deletion_policy     = "ABANDON"
 }
 
 # accounts 서비스 전용 로그인 계정.
@@ -115,6 +124,7 @@ resource "google_sql_user" "accounts" {
   instance            = google_sql_database_instance.main.name
   password_wo         = var.accounts_password
   password_wo_version = 1
+  deletion_policy     = "ABANDON"
 }
 
 # ledger 서비스 전용 로그인 계정.
@@ -122,5 +132,15 @@ resource "google_sql_user" "ledger" {
   name                = var.ledger_username
   instance            = google_sql_database_instance.main.name
   password_wo         = var.ledger_password
+  password_wo_version = 1
+  deletion_policy     = "ABANDON"
+}
+
+# GKE bootstrap Job 전용 built-in 사용자. Cloud SQL은 built-in 사용자를
+# cloudsqlsuperuser 멤버로 생성하므로 이 계정만 role/grant 정리에 사용한다.
+resource "google_sql_user" "bootstrap" {
+  name                = var.bootstrap_username
+  instance            = google_sql_database_instance.main.name
+  password_wo         = var.bootstrap_password
   password_wo_version = 1
 }

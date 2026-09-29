@@ -92,3 +92,13 @@ variable "ledger_password" {
   sensitive = true
   ephemeral = true
 }
+
+variable "bootstrap_username" {
+  type = string
+}
+
+variable "bootstrap_password" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
