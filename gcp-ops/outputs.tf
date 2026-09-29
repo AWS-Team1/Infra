@@ -3,5 +3,5 @@ output "argocd_global_ip" {
 }
 
 output "argocd_url" {
-  value = "https://${trimsuffix(google_dns_record_set.argocd.name, ".")}"
+  value = "https://${aws_route53_record.argocd.fqdn}"
 }
